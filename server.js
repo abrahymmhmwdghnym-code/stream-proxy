@@ -5,13 +5,9 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(cors());
 
-// ============================================
-// 🔍 استخراج الـ Headers المناسبة لكل موقع
-// ============================================
-
 function getHeaders(url) {
     const headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.159 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/149.0.7827.159 Mobile Safari/537.36',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
@@ -19,38 +15,24 @@ function getHeaders(url) {
         'Sec-Fetch-Site': 'same-origin',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
-        'Priority': 'u=1, i'
+        'Priority': 'u=1, i',
+        'Cache-Control': 'no-cache'
     };
 
     try {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
 
-        // ============================================
-        // 🎯 kora-plus.app (الرابط اللي انت عايزه)
-        // ============================================
         if (hostname.includes('kora-plus')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/sw.js`;
-        }
-        // ============================================
-        // 📌 kora-yalla.blog
-        // ============================================
-        else if (hostname.includes('kora-yalla')) {
+        } else if (hostname.includes('kora-yalla')) {
             headers.Origin = 'https://news.sites10.top';
             headers.Referer = 'https://news.sites10.top/';
-        }
-        // ============================================
-        // 📌 vertyuz.xyz
-        // ============================================
-        else if (hostname.includes('vertyuz')) {
+        } else if (hostname.includes('vertyuz')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/`;
-        }
-        // ============================================
-        // 📌 أي موقع تاني
-        // ============================================
-        else {
+        } else {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/`;
         }
@@ -61,10 +43,6 @@ function getHeaders(url) {
 
     return headers;
 }
-
-// ============================================
-// 📡 نقطة نهاية الوكيل (Proxy)
-// ============================================
 
 app.get('/api/stream', async (req, res) => {
     const url = req.query.url;
@@ -78,24 +56,31 @@ app.get('/api/stream', async (req, res) => {
         const headers = getHeaders(url);
         console.log(`📌 Using Referer: ${headers.Referer}`);
 
-        const response = await fetch(url, { headers });
+        const response = await fetch(url, { 
+            headers,
+            redirect: 'manual'
+        });
+
+        // لو حصل ريديركت لجوجل، نمنعه
+        if (response.status === 302 || response.status === 301) {
+            const location = response.headers.get('location') || '';
+            if (location.includes('google.com')) {
+                console.error('❌ تم التحويل إلى جوجل!');
+                return res.status(403).send('المحتوى محمي');
+            }
+        }
 
         if (!response.ok) {
             console.error(`❌ Response Error: ${response.status}`);
             return res.status(response.status).send(`Error: ${response.status}`);
         }
 
-        // ============================================
-        // 🔥 تعديل الروابط الداخلية لملف M3U8
-        // ============================================
         const contentType = response.headers.get('content-type') || '';
         let data = await response.text();
 
-        // لو كان M3U8، عدل الروابط عشان تمر على الـ Proxy
         if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
             const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
             
-            // عدل روابط .ts عشان تعدي على الـ Proxy
             data = data.replace(/^([^#][^\s]+\.ts[^\s]*)$/gm, (match, p1) => {
                 try {
                     const absoluteUrl = new URL(p1, baseUrl).href;
@@ -105,7 +90,6 @@ app.get('/api/stream', async (req, res) => {
                 }
             });
 
-            // عدل روابط .key
             data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
                 try {
                     const absoluteUrl = new URL(p1, baseUrl).href;
@@ -121,9 +105,7 @@ app.get('/api/stream', async (req, res) => {
         }
 
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
         res.setHeader('Cache-Control', 'no-cache');
-        
         res.send(data);
 
     } catch (error) {
@@ -131,10 +113,6 @@ app.get('/api/stream', async (req, res) => {
         res.status(500).send('Proxy error: ' + error.message);
     }
 });
-
-// ============================================
-// ✅ مسار صحي (Health Check)
-// ============================================
 
 app.get('/', (req, res) => res.send('🚀 Proxy is running'));
 
