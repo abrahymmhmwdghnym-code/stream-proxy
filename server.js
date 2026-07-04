@@ -6,19 +6,22 @@ const app = express();
 app.use(cors());
 
 // ============================================
-// 🔍 استخراج الـ Headers لكل موقع
+// 🔍 استخراج الـ Headers المناسبة لكل موقع
 // ============================================
 
 function getHeaders(url) {
+    // ============================================
+    // 🎯 الرؤوس الأساسية (عامة)
+    // ============================================
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.159 Mobile Safari/537.36',
-        'Accept': '*/*',
+        'Accept': '*/*',  // مهم جداً: مش text/html
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
         'X-Requested-With': 'com.mycompany.app.soulbrowser',
-        'Sec-Fetch-Site': 'cross-site',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Site': 'cross-site',  // مهم لـ foozlive
+        'Sec-Fetch-Mode': 'cors',        // مهم لـ foozlive
+        'Sec-Fetch-Dest': 'empty',       // مهم لـ foozlive
         'Priority': 'u=1, i',
         'Cache-Control': 'no-cache'
     };
@@ -40,6 +43,7 @@ function getHeaders(url) {
         else if (hostname.includes('kora-plus')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/sw.js`;
+            headers['Sec-Fetch-Site'] = 'same-origin';
         }
         // ============================================
         // 🎯 kora-yalla.blog
@@ -47,6 +51,7 @@ function getHeaders(url) {
         else if (hostname.includes('kora-yalla')) {
             headers.Origin = 'https://news.sites10.top';
             headers.Referer = 'https://news.sites10.top/';
+            headers['Sec-Fetch-Site'] = 'cross-site';
         }
         // ============================================
         // 🎯 vertyuz.xyz
@@ -123,17 +128,18 @@ app.get('/api/stream', async (req, res) => {
     try {
         const headers = getHeaders(url);
         console.log(`📌 Using Referer: ${headers.Referer}`);
+        console.log(`📌 Using Origin: ${headers.Origin}`);
 
         const response = await fetch(url, { 
             headers,
-            redirect: 'manual'
+            redirect: 'manual'  // منع الـ Redirect التلقائي
         });
 
         // لو حصل ريديركت لجوجل، نمنعه
         if (response.status === 302 || response.status === 301) {
             const location = response.headers.get('location') || '';
             if (location.includes('google.com')) {
-                console.error('❌ تم التحويل إلى جوجل!');
+                console.error('❌ تم التحويل إلى جوجل! الموقع يرفض الطلب.');
                 return res.status(403).send('المحتوى محمي');
             }
         }
