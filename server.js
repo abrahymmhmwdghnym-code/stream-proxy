@@ -6,22 +6,21 @@ const app = express();
 app.use(cors());
 
 // ============================================
-// 🔍 استخراج الـ Headers المناسبة لكل موقع
+// 🔍 استخراج الـ Headers لكل موقع
 // ============================================
 
 function getHeaders(url) {
-    // ============================================
-    // 🎯 الرؤوس الأساسية (عامة)
-    // ============================================
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.159 Mobile Safari/537.36',
-        'Accept': '*/*',  // مهم جداً: مش text/html
-        'Accept-Encoding': 'gzip, deflate, br, zstd',
+        'Accept': '*/*',
+        // ⚠️ شيلنا br و zstd لأن node-fetch v2 مش بيعرف يفك ضغطهم
+        // لو تسيبهم والسيرفر البعيد يرد بـ Brotli هترجع بيانات تالفة
+        'Accept-Encoding': 'gzip, deflate',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
         'X-Requested-With': 'com.mycompany.app.soulbrowser',
-        'Sec-Fetch-Site': 'cross-site',  // مهم لـ foozlive
-        'Sec-Fetch-Mode': 'cors',        // مهم لـ foozlive
-        'Sec-Fetch-Dest': 'empty',       // مهم لـ foozlive
+        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Dest': 'empty',
         'Priority': 'u=1, i',
         'Cache-Control': 'no-cache'
     };
@@ -30,39 +29,22 @@ function getHeaders(url) {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
 
-        // ============================================
-        // 🎯 foozlive.co (النظام الجديد)
-        // ============================================
         if (hostname.includes('foozlive')) {
             headers.Origin = 'https://912acsss8af382.shootny.com';
             headers.Referer = 'https://912acsss8af382.shootny.com/';
         }
-        // ============================================
-        // 🎯 kora-plus.app
-        // ============================================
         else if (hostname.includes('kora-plus')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/sw.js`;
-            headers['Sec-Fetch-Site'] = 'same-origin';
         }
-        // ============================================
-        // 🎯 kora-yalla.blog
-        // ============================================
         else if (hostname.includes('kora-yalla')) {
             headers.Origin = 'https://news.sites10.top';
             headers.Referer = 'https://news.sites10.top/';
-            headers['Sec-Fetch-Site'] = 'cross-site';
         }
-        // ============================================
-        // 🎯 vertyuz.xyz
-        // ============================================
         else if (hostname.includes('vertyuz')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/`;
         }
-        // ============================================
-        // 📌 أي موقع تاني
-        // ============================================
         else {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/`;
@@ -80,7 +62,6 @@ function getHeaders(url) {
 // ============================================
 
 function fixM3U8Links(data, baseUrl, proxyBase) {
-    // 1. تعديل روابط .ts (الجزئيات)
     data = data.replace(/^([^#][^\s]+\.ts[^\s]*)$/gm, (match, p1) => {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
@@ -90,7 +71,6 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
         }
     });
 
-    // 2. تعديل روابط .key (مفاتيح التشفير)
     data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
@@ -100,7 +80,6 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
         }
     });
 
-    // 3. 🆕 تعديل الروابط الفرعية (Master Playlist - زي الـ HD/SD)
     data = data.replace(/^([^#][^\s]+\.m3u8[^\s]*)$/gm, (match, p1) => {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
@@ -114,13 +93,53 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
 }
 
 // ============================================
-// 📡 نقطة نهاية الوكيل (Proxy)
+// 📡 نقطة نهاية الوكيل (Proxy) — مع دعم redirect ومنع تقطيع الـ url
 // ============================================
 
+async function fetchWithRedirects(url, headers, maxRedirects = 5) {
+    let currentUrl = url;
+
+    for (let i = 0; i < maxRedirects; i++) {
+        const response = await fetch(currentUrl, { headers, redirect: 'manual' });
+
+        if (response.status === 301 || response.status === 302 || response.status === 307 || response.status === 308) {
+            const location = response.headers.get('location') || '';
+
+            if (location.includes('google.com')) {
+                throw new Error('BLOCKED_REDIRECT');
+            }
+            if (!location) {
+                return response;
+            }
+
+            // resolve relative redirects
+            currentUrl = new URL(location, currentUrl).href;
+            continue;
+        }
+
+        return response;
+    }
+
+    throw new Error('TOO_MANY_REDIRECTS');
+}
+
 app.get('/api/stream', async (req, res) => {
-    const url = req.query.url;
-    if (!url) {
+    // ⚠️ مهم جداً: بنستخرج كل حاجة بعد "url=" يدويًا من الـ raw query string
+    // عشان لو اللينك الأصلي فيه & (زي ?ts=...&nonce=...&token=...)
+    // ومحصلش عليه encodeURIComponent من العميل، مش هيتقطع عند أول &
+    const rawQuery = req.originalUrl.split('?').slice(1).join('?'); // كل اللي بعد أول ?
+    const urlMatch = rawQuery.match(/^url=(.+)$/);
+
+    if (!urlMatch) {
         return res.status(400).send('Missing url parameter');
+    }
+
+    let url = urlMatch[1];
+    // لو كان معمول له encode، نفكه. لو مش معمول له، decodeURIComponent هترجعه زي ما هو تقريبًا
+    try {
+        url = decodeURIComponent(url);
+    } catch (e) {
+        // لو فشل الفك، سيبه زي ما هو
     }
 
     console.log(`🔄 Proxying: ${url}`);
@@ -128,20 +147,16 @@ app.get('/api/stream', async (req, res) => {
     try {
         const headers = getHeaders(url);
         console.log(`📌 Using Referer: ${headers.Referer}`);
-        console.log(`📌 Using Origin: ${headers.Origin}`);
 
-        const response = await fetch(url, { 
-            headers,
-            redirect: 'manual'  // منع الـ Redirect التلقائي
-        });
-
-        // لو حصل ريديركت لجوجل، نمنعه
-        if (response.status === 302 || response.status === 301) {
-            const location = response.headers.get('location') || '';
-            if (location.includes('google.com')) {
-                console.error('❌ تم التحويل إلى جوجل! الموقع يرفض الطلب.');
+        let response;
+        try {
+            response = await fetchWithRedirects(url, headers);
+        } catch (e) {
+            if (e.message === 'BLOCKED_REDIRECT') {
+                console.error('❌ تم التحويل إلى جوجل!');
                 return res.status(403).send('المحتوى محمي');
             }
+            throw e;
         }
 
         if (!response.ok) {
@@ -155,7 +170,6 @@ app.get('/api/stream', async (req, res) => {
         const proxyBase = `/api/stream`;
         const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
 
-        // لو كان M3U8، عدل الروابط
         if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
             data = fixM3U8Links(data, baseUrl, proxyBase);
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
@@ -173,10 +187,6 @@ app.get('/api/stream', async (req, res) => {
         res.status(500).send('Proxy error: ' + error.message);
     }
 });
-
-// ============================================
-// ✅ مسار صحي (Health Check)
-// ============================================
 
 app.get('/', (req, res) => res.send('🚀 Proxy is running'));
 
