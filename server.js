@@ -11,11 +11,14 @@ app.use(cors());
 
 function getHeaders(url) {
     const headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.159 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Abck/4.0 Chrome/149.0.7827.159 Mobile Safari/537.36',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
         'X-Requested-With': 'com.mycompany.app.soulbrowser',
+        'sec-ch-ua': '"Android WebView";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
         'Sec-Fetch-Site': 'same-site',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
@@ -29,7 +32,7 @@ function getHeaders(url) {
         const hostname = urlObj.hostname;
 
         // ============================================
-        // 🎯 vertyuz.xyz (النظام الجديد)
+        // 🎯 vertyuz.xyz (النظام الجديد) - بيشمل كل السب-دومينز زي stm.vertyuz.xyz
         // ============================================
         if (hostname.includes('vertyuz')) {
             headers.Origin = 'https://tv.vertyuz.xyz';
@@ -180,25 +183,30 @@ app.get('/api/stream', async (req, res) => {
         }
 
         const contentType = response.headers.get('content-type') || '';
-        let data = await response.text();
+        const isM3U8 = contentType.includes('mpegurl') || url.toLowerCase().split('?')[0].endsWith('.m3u8');
 
         const proxyBase = `/api/stream`;
         const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
 
-        // ============================================
-        // 🎯 لو كان M3U8، عدل الروابط
-        // ============================================
-        if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
-            data = fixM3U8Links(data, baseUrl, proxyBase);
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        } else {
-            res.setHeader('Content-Type', contentType || 'text/plain');
-        }
-
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
         res.setHeader('Cache-Control', 'no-cache');
-        res.send(data);
+
+        // ============================================
+        // 🎯 لو كان M3U8 (نص) عدل الروابط جواه
+        // ⚠️ أي حاجة تانية (.ts / .key / صور) لازم تتبعت binary
+        //    زي ما هي عشان متتبوظش (كانت المشكلة قبل كده)
+        // ============================================
+        if (isM3U8) {
+            let data = await response.text();
+            data = fixM3U8Links(data, baseUrl, proxyBase);
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            res.send(data);
+        } else {
+            const buffer = await response.buffer();
+            res.setHeader('Content-Type', contentType || 'video/mp2t');
+            res.send(buffer);
+        }
 
     } catch (error) {
         console.error('❌ Proxy error:', error);
@@ -214,3 +222,4 @@ app.get('/', (req, res) => res.send('🚀 Proxy is running'));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`✅ Proxy running on port ${port}`));
+        
