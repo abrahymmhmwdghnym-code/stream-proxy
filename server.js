@@ -1,226 +1,285 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
 
 // ============================================
-// 🔑 التوكن الثابت (من الطلب)
+// 🔑 الثوابت
 // ============================================
 const AUTH_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo4NDczNSwicm9sZSI6InN0dWRlbnQiLCJ1dWlkIjoiNTY3YjdlZTdlNmUxNTJmYjhjMWQxN2JlZjAxNjUxMDEifQ.NgT1XJYopir7dgNNwpIK-BGbghqwdhw9u-Gf9lrd3Dw';
+const CACHE_KEYS = new Map(); // سخان: نخزن المفاتيح هنا عشان ما نطلبش نفس المفتاح مرتين
 
 // ============================================
-// 🔍 استخراج الـ Headers المناسبة
+// 🎯 بناء Headers حسب الـ Domain
 // ============================================
 
-function getHeaders(url) {
-    const headers = {
+function getHeadersForRequest(url) {
+    const baseHeaders = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
-        'Sec-Fetch-Site': 'same-site',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty',
-        'Priority': 'u=1, i',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        'sec-ch-ua': '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+        'sec-ch-ua-mobile': '?1',
+        'sec-ch-ua-platform': '"Android"',
         'Origin': 'https://coursatk.online',
-        'Referer': 'https://coursatk.online/'
+        'Referer': 'https://coursatk.online/',
     };
 
-    // لو الرابط فيه api.coursatk.online، نضيف التوكن
-    if (url && url.includes('api.coursatk.online')) {
-        headers['Authorization'] = AUTH_TOKEN;
+    // لو الطلب على `api.coursatk.online` (الـ M3U8 والمفتاح)
+    if (url.includes('api.coursatk.online')) {
+        return {
+            ...baseHeaders,
+            'Authorization': AUTH_TOKEN,
+            'Sec-Fetch-Site': 'same-site',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
+            'Priority': 'u=1, i',
+        };
     }
 
-    // لو الرابط فيه cloud3.cloudfrount.shop (قطع الفيديو)، نشيل التوكن
-    if (url && url.includes('cloud3.cloudfrount.shop')) {
-        delete headers.Authorization;
-        headers['Sec-Fetch-Site'] = 'cross-site';
+    // لو الطلب على `cloud3.cloudfrount.shop` (قطع الفيديو)
+    if (url.includes('cloud3.cloudfrount.shop')) {
+        return {
+            ...baseHeaders,
+            'Sec-Fetch-Site': 'cross-site',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
+            'Priority': 'u=1, i',
+            // ❌ لا نبعت Authorization على CloudFront
+        };
     }
 
-    return headers;
+    return baseHeaders;
 }
 
 // ============================================
-// 🔑 دالة جلب المفتاح من السيرفر
+// 🔐 جلب المفتاح من الـ Auth Endpoint
 // ============================================
 
-async function fetchKey(keyUrl) {
+async function fetchEncryptionKey(videoHash) {
+    // تحقق: هل في سخان؟
+    if (CACHE_KEYS.has(videoHash)) {
+        console.log(`♻️ استخدام المفتاح من الكاش: ${videoHash}`);
+        return CACHE_KEYS.get(videoHash);
+    }
+
+    const keyUrl = `https://api.coursatk.online/api/v1/user/auth/${videoHash}`;
+    
     try {
-        console.log(`🔑 جاري جلب المفتاح من: ${keyUrl}`);
-        const headers = getHeaders(keyUrl);
-        const response = await fetch(keyUrl, { headers });
+        console.log(`🔑 جلب المفتاح من: ${keyUrl}`);
+        const headers = getHeadersForRequest(keyUrl);
         
+        const response = await fetch(keyUrl, { 
+            headers,
+            timeout: 10000 
+        });
+
         if (!response.ok) {
             throw new Error(`فشل جلب المفتاح: ${response.status}`);
         }
+
+        const keyBuffer = await response.buffer();
+        console.log(`✅ المفتاح جاهز: ${keyBuffer.length} bytes`);
         
-        const buffer = await response.arrayBuffer();
-        console.log(`✅ تم جلب المفتاح: ${buffer.byteLength} بايت`);
-        return Buffer.from(buffer);
+        // نخزنه في الكاش (30 دقيقة)
+        CACHE_KEYS.set(videoHash, keyBuffer);
+        setTimeout(() => CACHE_KEYS.delete(videoHash), 30 * 60 * 1000);
+        
+        return keyBuffer;
     } catch (error) {
-        console.error('❌ خطأ في جلب المفتاح:', error.message);
+        console.error(`❌ خطأ في جلب المفتاح: ${error.message}`);
         return null;
     }
 }
 
 // ============================================
-// 🔄 تعديل الـ M3U8 (بيعدل الروابط ويضيف المفتاح)
+// 📺 جلب M3U8 وتعديله
 // ============================================
 
-async function fixM3U8Links(data, baseUrl, proxyBase) {
-    let modifiedData = data;
-    let keyBase64 = null;
-
-    // ============================================
-    // 👣 الخطوة 1: استخراج رابط المفتاح من الـ M3U8
-    // ============================================
-    const keyMatch = data.match(/URI="([^"]+)"/);
-    
-    if (keyMatch) {
-        const keyUrl = keyMatch[1];
-        console.log(`🔑 تم العثور على رابط المفتاح: ${keyUrl}`);
+async function fetchAndModifyM3U8(m3u8Url) {
+    try {
+        console.log(`📺 جلب M3U8 من: ${m3u8Url}`);
+        const headers = getHeadersForRequest(m3u8Url);
         
-        // جلب المفتاح من السيرفر
-        const keyBuffer = await fetchKey(keyUrl);
-        if (keyBuffer) {
-            keyBase64 = keyBuffer.toString('base64');
-            console.log(`🔑 المفتاح تم تحويله لـ base64: ${keyBase64.substring(0, 20)}...`);
-        }
-    } else {
-        console.warn('⚠️ لا يوجد مفتاح في الـ M3U8');
-    }
-
-    // ============================================
-    // 👣 الخطوة 2: تعديل روابط القطع (.woff2, .ts)
-    // ============================================
-    modifiedData = modifiedData.replace(/^([^#][^\s]+)$/gm, (match, p1) => {
-        // نفحص إذا كان الرابط يبدو كمقطع فيديو
-        const isSegment = p1.includes('seg-') || 
-                          p1.includes('.ts') || 
-                          p1.includes('.m3u8') ||
-                          p1.includes('.key') ||
-                          p1.includes('.woff2') ||
-                          /seg-\d+/.test(p1);
-        
-        if (isSegment) {
-            try {
-                const absoluteUrl = new URL(p1, baseUrl).href;
-                return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
-            } catch (e) {
-                return match;
-            }
-        }
-        return match;
-    });
-
-    // ============================================
-    // 👣 الخطوة 3: إضافة المفتاح في الـ M3U8
-    // ============================================
-    if (keyBase64) {
-        modifiedData = modifiedData.replace(/URI="([^"]+)"/g, () => {
-            return `URI="data:text/plain;base64,${keyBase64}"`;
+        const response = await fetch(m3u8Url, { 
+            headers,
+            timeout: 10000 
         });
-        console.log('✅ تم إضافة المفتاح في الـ M3U8');
-    }
-
-    return modifiedData;
-}
-
-// ============================================
-// 📡 متابعة الـ Redirects
-// ============================================
-
-async function fetchWithRedirects(url, headers, maxRedirects = 5) {
-    let currentUrl = url;
-
-    for (let i = 0; i < maxRedirects; i++) {
-        const response = await fetch(currentUrl, { headers, redirect: 'manual' });
-
-        if (response.status === 301 || response.status === 302 || response.status === 307 || response.status === 308) {
-            const location = response.headers.get('location') || '';
-
-            if (location.includes('google.com')) {
-                throw new Error('BLOCKED_REDIRECT');
-            }
-            if (!location) {
-                return response;
-            }
-
-            currentUrl = new URL(location, currentUrl).href;
-            continue;
-        }
-
-        return response;
-    }
-
-    throw new Error('TOO_MANY_REDIRECTS');
-}
-
-// ============================================
-// 📡 نقطة نهاية الوكيل (Proxy)
-// ============================================
-
-app.get('/api/stream', async (req, res) => {
-    const rawQuery = req.originalUrl.split('?').slice(1).join('?');
-    const urlMatch = rawQuery.match(/^url=(.+)$/);
-
-    if (!urlMatch) {
-        return res.status(400).send('Missing url parameter');
-    }
-
-    let url = urlMatch[1];
-    try {
-        url = decodeURIComponent(url);
-    } catch (e) {}
-
-    console.log(`🔄 جاري الـ Proxy: ${url}`);
-
-    try {
-        const headers = getHeaders(url);
-        const response = await fetchWithRedirects(url, headers);
 
         if (!response.ok) {
-            console.error(`❌ خطأ في الرد: ${response.status}`);
-            return res.status(response.status).send(`Error: ${response.status}`);
+            throw new Error(`فشل جلب M3U8: ${response.status}`);
         }
 
-        const contentType = response.headers.get('content-type') || '';
-        let data = await response.text();
+        let m3u8Data = await response.text();
+        console.log(`✅ M3U8 جاهز (${m3u8Data.length} حرف)`);
 
-        const proxyBase = `/api/stream`;
-        const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+        // استخرج رابط المفتاح من الـ M3U8
+        // مثال: URI="https://cloud3.cloudfrount.shop/videos/hash/480/key.key?..."
+        const keyUrlMatch = m3u8Data.match(/URI="([^"]+)"/);
+        let encryptionKey = null;
 
-        // ============================================
-        // 🎯 لو كان M3U8، نعدله
-        // ============================================
-        if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
-            console.log('📄 تم استلام M3U8، جاري التعديل...');
-            data = await fixM3U8Links(data, baseUrl, proxyBase);
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        } else {
-            res.setHeader('Content-Type', contentType || 'text/plain');
+        if (keyUrlMatch) {
+            const keyUrl = keyUrlMatch[1];
+            const videoHashMatch = keyUrl.match(/\/videos\/([a-f0-9]+)\//);
+            
+            if (videoHashMatch) {
+                const videoHash = videoHashMatch[1];
+                console.log(`🔍 استخرجنا hash الفيديو: ${videoHash}`);
+                encryptionKey = await fetchEncryptionKey(videoHash);
+            }
         }
 
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.send(data);
+        // اآن بنعدل الـ M3U8:
+        // 1. نستبدل رابط المفتاح بـ data URI من المفتاح الحقيقي
+        if (encryptionKey) {
+            const keyBase64 = encryptionKey.toString('base64');
+            m3u8Data = m3u8Data.replace(
+                /URI="([^"]+)"/g,
+                `URI="data:application/octet-stream;base64,${keyBase64}"`
+            );
+            console.log(`🔐 المفتاح وضع في M3U8`);
+        }
+
+        // 2. نعدل روابط القطع عشان تعدي من الـ Proxy بتاعنا
+        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+        m3u8Data = m3u8Data.replace(/^([^#][^\s]+)$/gm, (match, url) => {
+            // تجاهل التعليقات والعناوين
+            if (url.startsWith('#') || url.startsWith('data:')) {
+                return match;
+            }
+
+            // اذا كان قطعة (seg-, .ts, .m3u8)
+            if (/seg-|\.ts$|\.m3u8$/i.test(url)) {
+                try {
+                    const absoluteUrl = new URL(url, baseUrl).href;
+                    return `/api/segment?url=${encodeURIComponent(absoluteUrl)}`;
+                } catch (e) {
+                    return match;
+                }
+            }
+
+            return match;
+        });
+
+        console.log(`📝 M3U8 عدل وجاهز`);
+        return m3u8Data;
 
     } catch (error) {
-        console.error('❌ خطأ في الـ Proxy:', error.message);
-        res.status(500).send('Proxy error: ' + error.message);
+        console.error(`❌ خطأ في معالجة M3U8: ${error.message}`);
+        return null;
+    }
+}
+
+// ============================================
+// 📥 جلب قطعة من الفيديو
+// ============================================
+
+async function fetchSegment(segmentUrl) {
+    try {
+        console.log(`📥 جلب القطعة من: ${segmentUrl.substring(0, 80)}...`);
+        const headers = getHeadersForRequest(segmentUrl);
+        
+        const response = await fetch(segmentUrl, { 
+            headers,
+            timeout: 15000 
+        });
+
+        if (!response.ok) {
+            console.error(`❌ فشل جلب القطعة: ${response.status}`);
+            return null;
+        }
+
+        const buffer = await response.buffer();
+        console.log(`✅ القطعة جاهزة: ${buffer.length} bytes`);
+        return buffer;
+
+    } catch (error) {
+        console.error(`❌ خطأ في جلب القطعة: ${error.message}`);
+        return null;
+    }
+}
+
+// ============================================
+// 🌐 نقاط النهاية (Endpoints)
+// ============================================
+
+// 1️⃣ طلب الـ M3U8 المعدل
+app.get('/api/m3u8', async (req, res) => {
+    const m3u8Url = req.query.url;
+
+    if (!m3u8Url) {
+        return res.status(400).json({ error: 'يلزم رابط الـ M3U8' });
+    }
+
+    try {
+        const decodedUrl = decodeURIComponent(m3u8Url);
+        const modifiedM3u8 = await fetchAndModifyM3U8(decodedUrl);
+
+        if (!modifiedM3u8) {
+            return res.status(500).json({ error: 'فشل جلب الـ M3U8' });
+        }
+
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'no-cache, no-store');
+        res.send(modifiedM3u8);
+
+    } catch (error) {
+        console.error(`❌ خطأ في endpoint M3U8: ${error.message}`);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// ============================================
-// ✅ مسار صحي (Health Check)
-// ============================================
+// 2️⃣ طلب قطعة من الفيديو
+app.get('/api/segment', async (req, res) => {
+    const segmentUrl = req.query.url;
 
-app.get('/', (req, res) => res.send('🚀 Smart Proxy is running'));
+    if (!segmentUrl) {
+        return res.status(400).json({ error: 'يلزم رابط القطعة' });
+    }
+
+    try {
+        const decodedUrl = decodeURIComponent(segmentUrl);
+        const segmentBuffer = await fetchSegment(decodedUrl);
+
+        if (!segmentBuffer) {
+            return res.status(500).json({ error: 'فشل جلب القطعة' });
+        }
+
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Content-Length', segmentBuffer.length);
+        res.send(segmentBuffer);
+
+    } catch (error) {
+        console.error(`❌ خطأ في endpoint القطعة: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 3️⃣ Health Check
+app.get('/', (req, res) => {
+    res.json({
+        status: '✅ الوكيل شغال',
+        endpoints: {
+            m3u8: '/api/m3u8?url=...',
+            segment: '/api/segment?url=...'
+        }
+    });
+});
+
+// ============================================
+// 🚀 تشغيل السيرفر
+// ============================================
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`✅ Proxy running on port ${port}`));
+app.listen(port, () => {
+    console.log(`✅ الوكيل شغال على البورت ${port}`);
+    console.log(`📍 افتح: http://localhost:${port}`);
+});
+                    
