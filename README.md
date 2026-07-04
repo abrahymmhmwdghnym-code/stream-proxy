@@ -1,2 +1,16 @@
-# stream-proxy
-Smart proxy for HLS streams
+# 🟢 Stream Proxy
+
+> وكيل (Proxy) ذكي لبث الفيديو HLS مع دعم تلقائي لرؤوس (Headers) مختلفة
+
+---
+
+## 🎯 المميزات
+
+- ✅ **يعمل مع أي رابط** - بيستخرج الـ Referer المناسب تلقائياً
+- ✅ **يدعم كل المواقع** - kora-yalla, yalla-shoot, koora-live وغيرهم
+- ✅ **مجاني 100%** - شغال على Railway
+- ✅ **سريع وآمن** - بيضيف الـ Headers المطلوبة
+
+---
+
+## 🚀 طريقة الاستخدام
