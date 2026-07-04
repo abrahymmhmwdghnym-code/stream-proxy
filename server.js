@@ -22,8 +22,6 @@ function extractReferer(url) {
             'koora-live.com': 'https://koora-live.com/',
             'kooora.com': 'https://kooora.com/',
             'kora-plus.app': `${urlObj.protocol}//${urlObj.hostname}/sw.js`,
-            'goal.com': 'https://goal.com/',
-            'bein.net': 'https://bein.net/',
         };
 
         for (const [domain, referer] of Object.entries(refererMap)) {
@@ -65,29 +63,26 @@ function extractUserAgent(url) {
 }
 
 // ============================================
-// 🔍 استخراج رابط M3U8 من أي نص (HTML أو M3U8)
+// 🔍 استخراج رابط M3U8 من HTML (فقط لو الرابط مش M3U8)
 // ============================================
 
-function extractM3U8(content, baseUrl) {
-    // 1. لو المحتوى نفسه M3U8
-    if (content.trim().startsWith('#EXTM3U')) {
-        return content;
-    }
-
-    // 2. جيب أي رابط M3U8 من جوة النص
+function extractM3U8FromHTML(html, baseUrl) {
+    // جيب أي رابط M3U8 من جوة النص
     const m3u8Regex = /https?:\/\/[^\s"']+\.m3u8[^\s"']*/gi;
-    const matches = content.match(m3u8Regex);
+    const matches = html.match(m3u8Regex);
     if (matches && matches.length > 0) {
-        return matches[0]; // أول رابط M3U8
+        return matches[0];
     }
 
-    // 3. جيب أي رابط فيه m3u8 (حتى لو مش مكتوب كامل)
+    // جيب أي رابط فيه m3u8 (حتى لو مش مكتوب كامل)
     const partialRegex = /["']([^"']*\.m3u8[^"']*)["']/gi;
     let match;
-    while ((match = partialRegex.exec(content)) !== null) {
+    while ((match = partialRegex.exec(html)) !== null) {
         let url = match[1];
         if (!url.startsWith('http')) {
-            url = new URL(url, baseUrl).href;
+            try {
+                url = new URL(url, baseUrl).href;
+            } catch (e) { continue; }
         }
         return url;
     }
@@ -127,18 +122,18 @@ app.get('/api/stream', async (req, res) => {
 
     try {
         const response = await fetch(targetUrl, { headers });
+        const contentType = response.headers.get('content-type') || '';
 
-        // لو الرابط مش M3U8، جيب المحتوى واستخرج الرابط
-        let contentType = response.headers.get('content-type') || '';
-
-        if (contentType.includes('text/html') || !targetUrl.includes('.m3u8')) {
-            // ده صفحة HTML، استخرج الرابط M3U8 من جواه
+        // ============================================
+        // 🔥 حالة خاصة: الرابط مش M3U8 (صفحة HTML)
+        // ============================================
+        if (!targetUrl.includes('.m3u8') && contentType.includes('text/html')) {
             const html = await response.text();
-            const m3u8Url = extractM3U8(html, targetUrl);
+            const m3u8Url = extractM3U8FromHTML(html, targetUrl);
 
             if (m3u8Url) {
-                // لو لقينا رابط M3U8، ارجعه للمشغل
-                console.log(`✅ Found M3U8: ${m3u8Url}`);
+                console.log(`✅ Found M3U8 in HTML: ${m3u8Url}`);
+                // حول المستخدم تلقائياً للرابط الجديد
                 return res.redirect(`/api/stream?url=${encodeURIComponent(m3u8Url)}`);
             } else {
                 // لو ملقتش رابط، ارجع الـ HTML نفسه
@@ -147,11 +142,22 @@ app.get('/api/stream', async (req, res) => {
             }
         }
 
-        // ده M3U8، عديه زي ما هو
+        // ============================================
+        // 🎯 الحالة العادية: الرابط M3U8 (شغال زي الأول)
+        // ============================================
         const data = await response.text();
-        const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
 
-        // عدل الروابط الداخلية عشان تعدي على الـ Proxy
+        // لو مش M3U8 حقيقي، حاول تستخرج الرابط
+        if (!data.trim().startsWith('#EXTM3U')) {
+            const m3u8Url = extractM3U8FromHTML(data, targetUrl);
+            if (m3u8Url) {
+                console.log(`✅ Found M3U8 in response: ${m3u8Url}`);
+                return res.redirect(`/api/stream?url=${encodeURIComponent(m3u8Url)}`);
+            }
+        }
+
+        // عدل الروابط الداخلية (نفس النظام القديم)
+        const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
         const modified = data
             .replace(/^([^#][^\s]+\.ts)$/gm, (match, p1) => {
                 const absoluteUrl = new URL(p1, baseUrl).href;
