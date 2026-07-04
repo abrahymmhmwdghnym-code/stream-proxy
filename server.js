@@ -1,12 +1,22 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const https = require('https');
+const http = require('http');
 
 const app = express();
 app.use(cors());
 
 // ============================================
-// 🧠 استخراج الـ Headers المناسبة تلقائياً
+// 🧠 Agent مخصص للتعامل مع مشاكل الـ SSL
+// ============================================
+const agent = new https.Agent({
+    rejectUnauthorized: false, // يتجاهل مشاكل الشهادات
+    keepAlive: true
+});
+
+// ============================================
+// 🔍 استخراج الـ Headers المناسبة
 // ============================================
 
 function extractReferer(url) {
@@ -22,6 +32,8 @@ function extractReferer(url) {
             'koora-live.com': 'https://koora-live.com/',
             'kooora.com': 'https://kooora.com/',
             'kora-plus.app': `${urlObj.protocol}//${urlObj.hostname}/sw.js`,
+            'vertyuz.xyz': `${urlObj.protocol}//${urlObj.hostname}/`,
+            'vertyuz.com': `${urlObj.protocol}//${urlObj.hostname}/`,
         };
 
         for (const [domain, referer] of Object.entries(refererMap)) {
@@ -52,7 +64,7 @@ function extractUserAgent(url) {
     try {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
-        const mobileSites = ['kora-plus', 'yalla-shoot', 'yallashoot'];
+        const mobileSites = ['kora-plus', 'yalla-shoot', 'yallashoot', 'vertyuz'];
         for (const site of mobileSites) {
             if (hostname.includes(site)) return mobileUA;
         }
@@ -100,10 +112,17 @@ app.get('/api/stream', async (req, res) => {
         return res.status(400).send('Missing url parameter');
     }
 
-    const referer = extractReferer(targetUrl);
-    const origin = extractOrigin(targetUrl);
-    const userAgent = extractUserAgent(targetUrl);
+    // 🛡️ حماية: لو الرابط مش مكتوب كامل، نكمله
+    let fullUrl = targetUrl;
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+        fullUrl = 'https://' + targetUrl;
+    }
 
+    const referer = extractReferer(fullUrl);
+    const origin = extractOrigin(fullUrl);
+    const userAgent = extractUserAgent(fullUrl);
+
+    // 🔥 بناء الرؤوس (Headers) ديناميكياً
     const headers = {
         'User-Agent': userAgent,
         'Origin': origin,
@@ -114,22 +133,36 @@ app.get('/api/stream', async (req, res) => {
         'Sec-Fetch-Site': 'cross-site',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
-        'X-Requested-With': 'com.mycompany.app.soulbrowser'
+        'X-Requested-With': 'com.mycompany.app.soulbrowser',
+        'Connection': 'keep-alive'
     };
 
-    console.log(`🔄 Proxying: ${targetUrl}`);
+    console.log(`🔄 Proxying: ${fullUrl}`);
     console.log(`📌 Using Referer: ${referer}`);
+    console.log(`📌 Using Origin: ${origin}`);
 
     try {
-        const response = await fetch(targetUrl, { headers });
+        // 🧠 استخدام Agent مخصص عشان نتجاوز مشاكل SSL
+        const response = await fetch(fullUrl, { 
+            headers,
+            agent: fullUrl.startsWith('https') ? agent : undefined,
+            timeout: 30000 // 30 ثانية مهلة
+        });
+
+        // لو الرد مش ناجح
+        if (!response.ok) {
+            console.error(`❌ Response Error: ${response.status} ${response.statusText}`);
+            return res.status(response.status).send(`Error: ${response.status} ${response.statusText}`);
+        }
+
         const contentType = response.headers.get('content-type') || '';
 
         // ============================================
         // 🔥 حالة خاصة: الرابط مش M3U8 (صفحة HTML)
         // ============================================
-        if (!targetUrl.includes('.m3u8') && contentType.includes('text/html')) {
+        if (!fullUrl.includes('.m3u8') && contentType.includes('text/html')) {
             const html = await response.text();
-            const m3u8Url = extractM3U8FromHTML(html, targetUrl);
+            const m3u8Url = extractM3U8FromHTML(html, fullUrl);
 
             if (m3u8Url) {
                 console.log(`✅ Found M3U8 in HTML: ${m3u8Url}`);
@@ -143,13 +176,13 @@ app.get('/api/stream', async (req, res) => {
         }
 
         // ============================================
-        // 🎯 الحالة العادية: الرابط M3U8 (شغال زي الأول)
+        // 🎯 الحالة العادية: الرابط M3U8
         // ============================================
         const data = await response.text();
 
         // لو مش M3U8 حقيقي، حاول تستخرج الرابط
         if (!data.trim().startsWith('#EXTM3U')) {
-            const m3u8Url = extractM3U8FromHTML(data, targetUrl);
+            const m3u8Url = extractM3U8FromHTML(data, fullUrl);
             if (m3u8Url) {
                 console.log(`✅ Found M3U8 in response: ${m3u8Url}`);
                 return res.redirect(`/api/stream?url=${encodeURIComponent(m3u8Url)}`);
@@ -157,24 +190,41 @@ app.get('/api/stream', async (req, res) => {
         }
 
         // عدل الروابط الداخلية (نفس النظام القديم)
-        const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+        const baseUrl = fullUrl.substring(0, fullUrl.lastIndexOf('/') + 1);
         const modified = data
             .replace(/^([^#][^\s]+\.ts)$/gm, (match, p1) => {
-                const absoluteUrl = new URL(p1, baseUrl).href;
-                return `/api/stream?url=${encodeURIComponent(absoluteUrl)}`;
+                try {
+                    const absoluteUrl = new URL(p1, baseUrl).href;
+                    return `/api/stream?url=${encodeURIComponent(absoluteUrl)}`;
+                } catch (e) {
+                    return match;
+                }
             })
             .replace(/URI="([^"]+)"/g, (match, p1) => {
-                const absoluteUrl = new URL(p1, baseUrl).href;
-                return `URI="/api/stream?url=${encodeURIComponent(absoluteUrl)}"`;
+                try {
+                    const absoluteUrl = new URL(p1, baseUrl).href;
+                    return `URI="/api/stream?url=${encodeURIComponent(absoluteUrl)}"`;
+                } catch (e) {
+                    return match;
+                }
             });
 
+        // إضافة CORS headers
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
+        res.setHeader('Cache-Control', 'no-cache');
+        
         res.send(modified);
 
     } catch (error) {
         console.error('❌ Proxy error:', error);
-        res.status(500).send('Proxy error');
+        // ارسال خطأ مفصل
+        res.status(500).json({ 
+            error: 'Proxy error', 
+            message: error.message,
+            url: fullUrl
+        });
     }
 });
 
