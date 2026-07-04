@@ -60,6 +60,13 @@ function getHeaders(url) {
             headers.Referer = 'https://news.sites10.top/';
         }
         // ============================================
+        // 🎯 floravon.shop (سيجمنتاته .woff2 مش .ts - نفس فكرة الفيديو بس مقنّعة)
+        // ============================================
+        else if (hostname.includes('floravon')) {
+            headers.Origin = 'https://coursatk.online';
+            headers.Referer = 'https://coursatk.online/';
+        }
+        // ============================================
         // 📌 أي موقع تاني
         // ============================================
         else {
@@ -104,6 +111,17 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
             return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // 4. تعديل سيجمنتات .woff2 (بعض السيرفرات زي floravon.shop بتبعت السيجمنتات
+    //    باسم .woff2 عشان تتنكر إنها خط مش فيديو - لازم تتعامل معاها زي .ts بالظبط)
+    data = data.replace(/^([^#][^\s]+\.woff2[^\s]*)$/gm, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
         } catch (e) {
             return match;
         }
@@ -183,7 +201,8 @@ app.get('/api/stream', async (req, res) => {
         }
 
         const contentType = response.headers.get('content-type') || '';
-        const isM3U8 = contentType.includes('mpegurl') || url.toLowerCase().split('?')[0].endsWith('.m3u8');
+        const cleanPath = url.toLowerCase().split('?')[0];
+        const isM3U8 = contentType.includes('mpegurl') || cleanPath.endsWith('.m3u8');
 
         const proxyBase = `/api/stream`;
         const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
@@ -194,7 +213,7 @@ app.get('/api/stream', async (req, res) => {
 
         // ============================================
         // 🎯 لو كان M3U8 (نص) عدل الروابط جواه
-        // ⚠️ أي حاجة تانية (.ts / .key / صور) لازم تتبعت binary
+        // ⚠️ أي حاجة تانية (.ts / .key / .woff2 / صور) لازم تتبعت binary
         //    زي ما هي عشان متتبوظش (كانت المشكلة قبل كده)
         // ============================================
         if (isM3U8) {
@@ -204,7 +223,13 @@ app.get('/api/stream', async (req, res) => {
             res.send(data);
         } else {
             const buffer = await response.buffer();
-            res.setHeader('Content-Type', contentType || 'video/mp2t');
+            // السيجمنتات المقنّعة بامتداد .woff2 (زي floravon.shop) لازم تتبعت
+            // كـ video/mp2t فعلي عشان الـ HLS player يقدر يعالجها، مش كخط
+            const isFakeFontSegment = cleanPath.endsWith('.woff2');
+            const outContentType = isFakeFontSegment
+                ? 'video/mp2t'
+                : (contentType || 'video/mp2t');
+            res.setHeader('Content-Type', outContentType);
             res.send(buffer);
         }
 
@@ -222,4 +247,4 @@ app.get('/', (req, res) => res.send('🚀 Proxy is running'));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`✅ Proxy running on port ${port}`));
-        
+    
