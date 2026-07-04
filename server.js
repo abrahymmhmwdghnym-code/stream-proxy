@@ -5,14 +5,18 @@ const fetch = require('node-fetch');
 const app = express();
 app.use(cors());
 
+// ============================================
+// 🔍 استخراج الـ Headers لكل موقع
+// ============================================
+
 function getHeaders(url) {
     const headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/149.0.7827.159 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.159 Mobile Safari/537.36',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
         'X-Requested-With': 'com.mycompany.app.soulbrowser',
-        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Site': 'cross-site',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
         'Priority': 'u=1, i',
@@ -23,16 +27,38 @@ function getHeaders(url) {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
 
-        if (hostname.includes('kora-plus')) {
+        // ============================================
+        // 🎯 foozlive.co (النظام الجديد)
+        // ============================================
+        if (hostname.includes('foozlive')) {
+            headers.Origin = 'https://912acsss8af382.shootny.com';
+            headers.Referer = 'https://912acsss8af382.shootny.com/';
+        }
+        // ============================================
+        // 🎯 kora-plus.app
+        // ============================================
+        else if (hostname.includes('kora-plus')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/sw.js`;
-        } else if (hostname.includes('kora-yalla')) {
+        }
+        // ============================================
+        // 🎯 kora-yalla.blog
+        // ============================================
+        else if (hostname.includes('kora-yalla')) {
             headers.Origin = 'https://news.sites10.top';
             headers.Referer = 'https://news.sites10.top/';
-        } else if (hostname.includes('vertyuz')) {
+        }
+        // ============================================
+        // 🎯 vertyuz.xyz
+        // ============================================
+        else if (hostname.includes('vertyuz')) {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/`;
-        } else {
+        }
+        // ============================================
+        // 📌 أي موقع تاني
+        // ============================================
+        else {
             headers.Origin = `https://${hostname}`;
             headers.Referer = `https://${hostname}/`;
         }
@@ -43,6 +69,48 @@ function getHeaders(url) {
 
     return headers;
 }
+
+// ============================================
+// 🔄 تعديل الروابط الداخلية لـ M3U8
+// ============================================
+
+function fixM3U8Links(data, baseUrl, proxyBase) {
+    // 1. تعديل روابط .ts (الجزئيات)
+    data = data.replace(/^([^#][^\s]+\.ts[^\s]*)$/gm, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // 2. تعديل روابط .key (مفاتيح التشفير)
+    data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // 3. 🆕 تعديل الروابط الفرعية (Master Playlist - زي الـ HD/SD)
+    data = data.replace(/^([^#][^\s]+\.m3u8[^\s]*)$/gm, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    return data;
+}
+
+// ============================================
+// 📡 نقطة نهاية الوكيل (Proxy)
+// ============================================
 
 app.get('/api/stream', async (req, res) => {
     const url = req.query.url;
@@ -78,33 +146,19 @@ app.get('/api/stream', async (req, res) => {
         const contentType = response.headers.get('content-type') || '';
         let data = await response.text();
 
+        const proxyBase = `/api/stream`;
+        const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+
+        // لو كان M3U8، عدل الروابط
         if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
-            const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
-            
-            data = data.replace(/^([^#][^\s]+\.ts[^\s]*)$/gm, (match, p1) => {
-                try {
-                    const absoluteUrl = new URL(p1, baseUrl).href;
-                    return `/api/stream?url=${encodeURIComponent(absoluteUrl)}`;
-                } catch (e) {
-                    return match;
-                }
-            });
-
-            data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
-                try {
-                    const absoluteUrl = new URL(p1, baseUrl).href;
-                    return `URI="/api/stream?url=${encodeURIComponent(absoluteUrl)}"`;
-                } catch (e) {
-                    return match;
-                }
-            });
-
+            data = fixM3U8Links(data, baseUrl, proxyBase);
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         } else {
             res.setHeader('Content-Type', contentType || 'text/plain');
         }
 
         res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
         res.setHeader('Cache-Control', 'no-cache');
         res.send(data);
 
@@ -113,6 +167,10 @@ app.get('/api/stream', async (req, res) => {
         res.status(500).send('Proxy error: ' + error.message);
     }
 });
+
+// ============================================
+// ✅ مسار صحي (Health Check)
+// ============================================
 
 app.get('/', (req, res) => res.send('🚀 Proxy is running'));
 
