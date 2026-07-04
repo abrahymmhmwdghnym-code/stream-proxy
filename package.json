@@ -1,7 +1,7 @@
 {
   "name": "stream-proxy",
   "version": "1.0.0",
-  "description": "Smart proxy for HLS streams",
+  "description": "Smart proxy for HLS streams with token support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
