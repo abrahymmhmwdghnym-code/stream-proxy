@@ -11,15 +11,11 @@ app.use(cors());
 
 function getHeaders(url) {
     const headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Abck/4.0 Chrome/149.0.7827.159 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36',
         'Accept': '*/*',
-        'Accept-Encoding': 'gzip, deflate',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
-        'X-Requested-With': 'com.mycompany.app.soulbrowser',
-        'sec-ch-ua': '"Android WebView";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
-        'sec-ch-ua-mobile': '?1',
-        'sec-ch-ua-platform': '"Android"',
-        'Sec-Fetch-Site': 'same-site',
+        'Sec-Fetch-Site': 'cross-site',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
         'Priority': 'u=1, i',
@@ -32,11 +28,29 @@ function getHeaders(url) {
         const hostname = urlObj.hostname;
 
         // ============================================
-        // 🎯 vertyuz.xyz (النظام الجديد) - بيشمل كل السب-دومينز زي stm.vertyuz.xyz
+        // 🎯 coursatk.online (مع التوكن)
         // ============================================
-        if (hostname.includes('vertyuz')) {
+        if (hostname.includes('coursatk')) {
+            headers.Origin = 'https://coursatk.online';
+            headers.Referer = 'https://coursatk.online/';
+            headers.Authorization = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo4NDczNSwicm9sZSI6InN0dWRlbnQiLCJ1dWlkIjoiNTY3YjdlZTdlNmUxNTJmYjhjMWQxN2JlZjAxNjUxMDEifQ.NgT1XJYopir7dgNNwpIK-BGbghqwdhw9u-Gf9lrd3Dw';
+            headers['Sec-Fetch-Site'] = 'same-site';
+        }
+        // ============================================
+        // 🎯 floravon.shop
+        // ============================================
+        else if (hostname.includes('floravon')) {
+            headers.Origin = 'https://coursatk.online';
+            headers.Referer = 'https://coursatk.online/';
+            headers['Sec-Fetch-Site'] = 'cross-site';
+        }
+        // ============================================
+        // 🎯 vertyuz.xyz
+        // ============================================
+        else if (hostname.includes('vertyuz')) {
             headers.Origin = 'https://tv.vertyuz.xyz';
             headers.Referer = 'https://tv.vertyuz.xyz/ch2.php';
+            headers['Sec-Fetch-Site'] = 'same-site';
         }
         // ============================================
         // 🎯 foozlive.co
@@ -60,13 +74,6 @@ function getHeaders(url) {
             headers.Referer = 'https://news.sites10.top/';
         }
         // ============================================
-        // 🎯 floravon.shop (سيجمنتاته .woff2 مش .ts - نفس فكرة الفيديو بس مقنّعة)
-        // ============================================
-        else if (hostname.includes('floravon')) {
-            headers.Origin = 'https://coursatk.online';
-            headers.Referer = 'https://coursatk.online/';
-        }
-        // ============================================
         // 📌 أي موقع تاني
         // ============================================
         else {
@@ -82,46 +89,35 @@ function getHeaders(url) {
 }
 
 // ============================================
-// 🔄 تعديل الروابط الداخلية لـ M3U8
+// 🔄 تعديل الروابط الداخلية لـ M3U8 (ذكي)
 // ============================================
 
 function fixM3U8Links(data, baseUrl, proxyBase) {
-    // 1. تعديل روابط .ts
-    data = data.replace(/^([^#][^\s]+\.ts[^\s]*)$/gm, (match, p1) => {
-        try {
-            const absoluteUrl = new URL(p1, baseUrl).href;
-            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
-        } catch (e) {
-            return match;
+    // 1. نعدل أي رابط بيحتوي على seg- أو .ts أو .m3u8 أو .key
+    data = data.replace(/^([^#][^\s]+)$/gm, (match, p1) => {
+        // نفحص إذا كان الرابط يبدو كمقطع فيديو
+        const isSegment = p1.includes('seg-') || 
+                          p1.includes('.ts') || 
+                          p1.includes('.m3u8') ||
+                          p1.includes('.key') ||
+                          /seg-\d+/.test(p1);
+        
+        if (isSegment) {
+            try {
+                const absoluteUrl = new URL(p1, baseUrl).href;
+                return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+            } catch (e) {
+                return match;
+            }
         }
+        return match;
     });
 
-    // 2. تعديل روابط .m3u8 الفرعية
-    data = data.replace(/^([^#][^\s]+\.m3u8[^\s]*)$/gm, (match, p1) => {
-        try {
-            const absoluteUrl = new URL(p1, baseUrl).href;
-            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
-        } catch (e) {
-            return match;
-        }
-    });
-
-    // 3. تعديل روابط .key
+    // 2. نعدل سطور URI (للمفاتيح)
     data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
             return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
-        } catch (e) {
-            return match;
-        }
-    });
-
-    // 4. تعديل سيجمنتات .woff2 (بعض السيرفرات زي floravon.shop بتبعت السيجمنتات
-    //    باسم .woff2 عشان تتنكر إنها خط مش فيديو - لازم تتعامل معاها زي .ts بالظبط)
-    data = data.replace(/^([^#][^\s]+\.woff2[^\s]*)$/gm, (match, p1) => {
-        try {
-            const absoluteUrl = new URL(p1, baseUrl).href;
-            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
         } catch (e) {
             return match;
         }
@@ -201,37 +197,25 @@ app.get('/api/stream', async (req, res) => {
         }
 
         const contentType = response.headers.get('content-type') || '';
-        const cleanPath = url.toLowerCase().split('?')[0];
-        const isM3U8 = contentType.includes('mpegurl') || cleanPath.endsWith('.m3u8');
+        let data = await response.text();
 
         const proxyBase = `/api/stream`;
         const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
 
+        // ============================================
+        // 🎯 لو كان M3U8، عدل الروابط
+        // ============================================
+        if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
+            data = fixM3U8Links(data, baseUrl, proxyBase);
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        } else {
+            res.setHeader('Content-Type', contentType || 'text/plain');
+        }
+
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
         res.setHeader('Cache-Control', 'no-cache');
-
-        // ============================================
-        // 🎯 لو كان M3U8 (نص) عدل الروابط جواه
-        // ⚠️ أي حاجة تانية (.ts / .key / .woff2 / صور) لازم تتبعت binary
-        //    زي ما هي عشان متتبوظش (كانت المشكلة قبل كده)
-        // ============================================
-        if (isM3U8) {
-            let data = await response.text();
-            data = fixM3U8Links(data, baseUrl, proxyBase);
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            res.send(data);
-        } else {
-            const buffer = await response.buffer();
-            // السيجمنتات المقنّعة بامتداد .woff2 (زي floravon.shop) لازم تتبعت
-            // كـ video/mp2t فعلي عشان الـ HLS player يقدر يعالجها، مش كخط
-            const isFakeFontSegment = cleanPath.endsWith('.woff2');
-            const outContentType = isFakeFontSegment
-                ? 'video/mp2t'
-                : (contentType || 'video/mp2t');
-            res.setHeader('Content-Type', outContentType);
-            res.send(buffer);
-        }
+        res.send(data);
 
     } catch (error) {
         console.error('❌ Proxy error:', error);
@@ -247,4 +231,3 @@ app.get('/', (req, res) => res.send('🚀 Proxy is running'));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`✅ Proxy running on port ${port}`));
-    
