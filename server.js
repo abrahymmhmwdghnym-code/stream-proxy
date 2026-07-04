@@ -14,7 +14,6 @@ function extractReferer(url) {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
 
-        // خريطة المواقع المعروفة (Referer مخصص لكل موقع)
         const refererMap = {
             'kora-yalla.blog': 'https://news.sites10.top/',
             'kora-yalla.com': 'https://news.sites10.top/',
@@ -33,7 +32,6 @@ function extractReferer(url) {
             }
         }
 
-        // لو مش في القائمة، استخدم الـ Referer العام
         return `${urlObj.protocol}//${urlObj.hostname}/`;
     } catch (e) {
         return 'https://news.sites10.top/';
@@ -50,14 +48,12 @@ function extractOrigin(url) {
 }
 
 function extractUserAgent(url) {
-    // User-Agent متعدد حسب الموقع
     const mobileUA = 'Mozilla/5.0 (Linux; Android 15; CPH2591) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.159 Mobile Safari/537.36';
     const desktopUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
     
     try {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
-        // المواقع اللي بتحب الموبايل
         const mobileSites = ['kora-plus', 'yalla-shoot', 'yallashoot'];
         for (const site of mobileSites) {
             if (hostname.includes(site)) return mobileUA;
@@ -66,6 +62,37 @@ function extractUserAgent(url) {
     } catch (e) {
         return mobileUA;
     }
+}
+
+// ============================================
+// 🔍 استخراج رابط M3U8 من أي نص (HTML أو M3U8)
+// ============================================
+
+function extractM3U8(content, baseUrl) {
+    // 1. لو المحتوى نفسه M3U8
+    if (content.trim().startsWith('#EXTM3U')) {
+        return content;
+    }
+
+    // 2. جيب أي رابط M3U8 من جوة النص
+    const m3u8Regex = /https?:\/\/[^\s"']+\.m3u8[^\s"']*/gi;
+    const matches = content.match(m3u8Regex);
+    if (matches && matches.length > 0) {
+        return matches[0]; // أول رابط M3U8
+    }
+
+    // 3. جيب أي رابط فيه m3u8 (حتى لو مش مكتوب كامل)
+    const partialRegex = /["']([^"']*\.m3u8[^"']*)["']/gi;
+    let match;
+    while ((match = partialRegex.exec(content)) !== null) {
+        let url = match[1];
+        if (!url.startsWith('http')) {
+            url = new URL(url, baseUrl).href;
+        }
+        return url;
+    }
+
+    return null;
 }
 
 // ============================================
@@ -78,12 +105,10 @@ app.get('/api/stream', async (req, res) => {
         return res.status(400).send('Missing url parameter');
     }
 
-    // استخراج الرؤوس المناسبة
     const referer = extractReferer(targetUrl);
     const origin = extractOrigin(targetUrl);
     const userAgent = extractUserAgent(targetUrl);
 
-    // 🔥 بناء الرؤوس (Headers) ديناميكياً
     const headers = {
         'User-Agent': userAgent,
         'Origin': origin,
@@ -99,22 +124,48 @@ app.get('/api/stream', async (req, res) => {
 
     console.log(`🔄 Proxying: ${targetUrl}`);
     console.log(`📌 Using Referer: ${referer}`);
-    console.log(`📌 Using Origin: ${origin}`);
 
     try {
         const response = await fetch(targetUrl, { headers });
 
-        // تحديد نوع المحتوى
-        const contentType = targetUrl.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl'
-                          : targetUrl.endsWith('.key') ? 'application/octet-stream'
-                          : 'video/MP2T';
+        // لو الرابط مش M3U8، جيب المحتوى واستخرج الرابط
+        let contentType = response.headers.get('content-type') || '';
 
-        res.setHeader('Content-Type', contentType);
+        if (contentType.includes('text/html') || !targetUrl.includes('.m3u8')) {
+            // ده صفحة HTML، استخرج الرابط M3U8 من جواه
+            const html = await response.text();
+            const m3u8Url = extractM3U8(html, targetUrl);
+
+            if (m3u8Url) {
+                // لو لقينا رابط M3U8، ارجعه للمشغل
+                console.log(`✅ Found M3U8: ${m3u8Url}`);
+                return res.redirect(`/api/stream?url=${encodeURIComponent(m3u8Url)}`);
+            } else {
+                // لو ملقتش رابط، ارجع الـ HTML نفسه
+                res.setHeader('Content-Type', 'text/html');
+                return res.send(html);
+            }
+        }
+
+        // ده M3U8، عديه زي ما هو
+        const data = await response.text();
+        const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+
+        // عدل الروابط الداخلية عشان تعدي على الـ Proxy
+        const modified = data
+            .replace(/^([^#][^\s]+\.ts)$/gm, (match, p1) => {
+                const absoluteUrl = new URL(p1, baseUrl).href;
+                return `/api/stream?url=${encodeURIComponent(absoluteUrl)}`;
+            })
+            .replace(/URI="([^"]+)"/g, (match, p1) => {
+                const absoluteUrl = new URL(p1, baseUrl).href;
+                return `URI="/api/stream?url=${encodeURIComponent(absoluteUrl)}"`;
+            });
+
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Length');
+        res.send(modified);
 
-        // تدفق البيانات (Stream)
-        response.body.pipe(res);
     } catch (error) {
         console.error('❌ Proxy error:', error);
         res.status(500).send('Proxy error');
