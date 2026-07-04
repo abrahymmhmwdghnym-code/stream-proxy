@@ -6,7 +6,12 @@ const app = express();
 app.use(cors());
 
 // ============================================
-// 🔍 استخراج الـ Headers لكل موقع
+// 🔑 التوكن الثابت (من الطلب)
+// ============================================
+const AUTH_TOKEN = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo4NDczNSwicm9sZSI6InN0dWRlbnQiLCJ1dWlkIjoiNTY3YjdlZTdlNmUxNTJmYjhjMWQxN2JlZjAxNjUxMDEifQ.NgT1XJYopir7dgNNwpIK-BGbghqwdhw9u-Gf9lrd3Dw';
+
+// ============================================
+// 🔍 استخراج الـ Headers المناسبة
 // ============================================
 
 function getHeaders(url) {
@@ -15,91 +20,90 @@ function getHeaders(url) {
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
-        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-Site': 'same-site',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
         'Priority': 'u=1, i',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        'Origin': 'https://coursatk.online',
+        'Referer': 'https://coursatk.online/'
     };
 
-    try {
-        const urlObj = new URL(url);
-        const hostname = urlObj.hostname;
+    // لو الرابط فيه api.coursatk.online، نضيف التوكن
+    if (url && url.includes('api.coursatk.online')) {
+        headers['Authorization'] = AUTH_TOKEN;
+    }
 
-        // ============================================
-        // 🎯 coursatk.online (مع التوكن)
-        // ============================================
-        if (hostname.includes('coursatk')) {
-            headers.Origin = 'https://coursatk.online';
-            headers.Referer = 'https://coursatk.online/';
-            headers.Authorization = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjo4NDczNSwicm9sZSI6InN0dWRlbnQiLCJ1dWlkIjoiNTY3YjdlZTdlNmUxNTJmYjhjMWQxN2JlZjAxNjUxMDEifQ.NgT1XJYopir7dgNNwpIK-BGbghqwdhw9u-Gf9lrd3Dw';
-            headers['Sec-Fetch-Site'] = 'same-site';
-        }
-        // ============================================
-        // 🎯 floravon.shop
-        // ============================================
-        else if (hostname.includes('floravon')) {
-            headers.Origin = 'https://coursatk.online';
-            headers.Referer = 'https://coursatk.online/';
-            headers['Sec-Fetch-Site'] = 'cross-site';
-        }
-        // ============================================
-        // 🎯 vertyuz.xyz
-        // ============================================
-        else if (hostname.includes('vertyuz')) {
-            headers.Origin = 'https://tv.vertyuz.xyz';
-            headers.Referer = 'https://tv.vertyuz.xyz/ch2.php';
-            headers['Sec-Fetch-Site'] = 'same-site';
-        }
-        // ============================================
-        // 🎯 foozlive.co
-        // ============================================
-        else if (hostname.includes('foozlive')) {
-            headers.Origin = 'https://912acsss8af382.shootny.com';
-            headers.Referer = 'https://912acsss8af382.shootny.com/';
-        }
-        // ============================================
-        // 🎯 kora-plus.app
-        // ============================================
-        else if (hostname.includes('kora-plus')) {
-            headers.Origin = `https://${hostname}`;
-            headers.Referer = `https://${hostname}/sw.js`;
-        }
-        // ============================================
-        // 🎯 kora-yalla.blog
-        // ============================================
-        else if (hostname.includes('kora-yalla')) {
-            headers.Origin = 'https://news.sites10.top';
-            headers.Referer = 'https://news.sites10.top/';
-        }
-        // ============================================
-        // 📌 أي موقع تاني
-        // ============================================
-        else {
-            headers.Origin = `https://${hostname}`;
-            headers.Referer = `https://${hostname}/`;
-        }
-    } catch (e) {
-        headers.Origin = 'https://news.sites10.top';
-        headers.Referer = 'https://news.sites10.top/';
+    // لو الرابط فيه cloud3.cloudfrount.shop (قطع الفيديو)، نشيل التوكن
+    if (url && url.includes('cloud3.cloudfrount.shop')) {
+        delete headers.Authorization;
+        headers['Sec-Fetch-Site'] = 'cross-site';
     }
 
     return headers;
 }
 
 // ============================================
-// 🔄 تعديل الروابط الداخلية لـ M3U8 (ذكي)
+// 🔑 دالة جلب المفتاح من السيرفر
 // ============================================
 
-function fixM3U8Links(data, baseUrl, proxyBase) {
-    // 1. نعدل أي رابط بيحتوي على seg- أو .ts أو .m3u8 أو .key
-    data = data.replace(/^([^#][^\s]+)$/gm, (match, p1) => {
+async function fetchKey(keyUrl) {
+    try {
+        console.log(`🔑 جاري جلب المفتاح من: ${keyUrl}`);
+        const headers = getHeaders(keyUrl);
+        const response = await fetch(keyUrl, { headers });
+        
+        if (!response.ok) {
+            throw new Error(`فشل جلب المفتاح: ${response.status}`);
+        }
+        
+        const buffer = await response.arrayBuffer();
+        console.log(`✅ تم جلب المفتاح: ${buffer.byteLength} بايت`);
+        return Buffer.from(buffer);
+    } catch (error) {
+        console.error('❌ خطأ في جلب المفتاح:', error.message);
+        return null;
+    }
+}
+
+// ============================================
+// 🔄 تعديل الـ M3U8 (بيعدل الروابط ويضيف المفتاح)
+// ============================================
+
+async function fixM3U8Links(data, baseUrl, proxyBase) {
+    let modifiedData = data;
+    let keyBase64 = null;
+
+    // ============================================
+    // 👣 الخطوة 1: استخراج رابط المفتاح من الـ M3U8
+    // ============================================
+    const keyMatch = data.match(/URI="([^"]+)"/);
+    
+    if (keyMatch) {
+        const keyUrl = keyMatch[1];
+        console.log(`🔑 تم العثور على رابط المفتاح: ${keyUrl}`);
+        
+        // جلب المفتاح من السيرفر
+        const keyBuffer = await fetchKey(keyUrl);
+        if (keyBuffer) {
+            keyBase64 = keyBuffer.toString('base64');
+            console.log(`🔑 المفتاح تم تحويله لـ base64: ${keyBase64.substring(0, 20)}...`);
+        }
+    } else {
+        console.warn('⚠️ لا يوجد مفتاح في الـ M3U8');
+    }
+
+    // ============================================
+    // 👣 الخطوة 2: تعديل روابط القطع (.woff2, .ts)
+    // ============================================
+    modifiedData = modifiedData.replace(/^([^#][^\s]+)$/gm, (match, p1) => {
         // نفحص إذا كان الرابط يبدو كمقطع فيديو
         const isSegment = p1.includes('seg-') || 
                           p1.includes('.ts') || 
                           p1.includes('.m3u8') ||
                           p1.includes('.key') ||
+                          p1.includes('.woff2') ||
                           /seg-\d+/.test(p1);
         
         if (isSegment) {
@@ -113,17 +117,17 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
         return match;
     });
 
-    // 2. نعدل سطور URI (للمفاتيح)
-    data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
-        try {
-            const absoluteUrl = new URL(p1, baseUrl).href;
-            return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
-        } catch (e) {
-            return match;
-        }
-    });
+    // ============================================
+    // 👣 الخطوة 3: إضافة المفتاح في الـ M3U8
+    // ============================================
+    if (keyBase64) {
+        modifiedData = modifiedData.replace(/URI="([^"]+)"/g, () => {
+            return `URI="data:text/plain;base64,${keyBase64}"`;
+        });
+        console.log('✅ تم إضافة المفتاح في الـ M3U8');
+    }
 
-    return data;
+    return modifiedData;
 }
 
 // ============================================
@@ -173,26 +177,14 @@ app.get('/api/stream', async (req, res) => {
         url = decodeURIComponent(url);
     } catch (e) {}
 
-    console.log(`🔄 Proxying: ${url}`);
+    console.log(`🔄 جاري الـ Proxy: ${url}`);
 
     try {
         const headers = getHeaders(url);
-        console.log(`📌 Using Referer: ${headers.Referer}`);
-        console.log(`📌 Using Origin: ${headers.Origin}`);
-
-        let response;
-        try {
-            response = await fetchWithRedirects(url, headers);
-        } catch (e) {
-            if (e.message === 'BLOCKED_REDIRECT') {
-                console.error('❌ تم التحويل إلى جوجل!');
-                return res.status(403).send('المحتوى محمي');
-            }
-            throw e;
-        }
+        const response = await fetchWithRedirects(url, headers);
 
         if (!response.ok) {
-            console.error(`❌ Response Error: ${response.status}`);
+            console.error(`❌ خطأ في الرد: ${response.status}`);
             return res.status(response.status).send(`Error: ${response.status}`);
         }
 
@@ -203,10 +195,11 @@ app.get('/api/stream', async (req, res) => {
         const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
 
         // ============================================
-        // 🎯 لو كان M3U8، عدل الروابط
+        // 🎯 لو كان M3U8، نعدله
         // ============================================
         if (contentType.includes('mpegurl') || data.trim().startsWith('#EXTM3U')) {
-            data = fixM3U8Links(data, baseUrl, proxyBase);
+            console.log('📄 تم استلام M3U8، جاري التعديل...');
+            data = await fixM3U8Links(data, baseUrl, proxyBase);
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         } else {
             res.setHeader('Content-Type', contentType || 'text/plain');
@@ -218,7 +211,7 @@ app.get('/api/stream', async (req, res) => {
         res.send(data);
 
     } catch (error) {
-        console.error('❌ Proxy error:', error);
+        console.error('❌ خطأ في الـ Proxy:', error.message);
         res.status(500).send('Proxy error: ' + error.message);
     }
 });
@@ -227,7 +220,7 @@ app.get('/api/stream', async (req, res) => {
 // ✅ مسار صحي (Health Check)
 // ============================================
 
-app.get('/', (req, res) => res.send('🚀 Proxy is running'));
+app.get('/', (req, res) => res.send('🚀 Smart Proxy is running'));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`✅ Proxy running on port ${port}`));
