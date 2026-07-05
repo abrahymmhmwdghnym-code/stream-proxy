@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { PassThrough } = require('stream');
 
 const app = express();
 
@@ -19,7 +20,124 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 // ============================================
-// 📡 نقطة نهاية الوكيل - ترجع البيانات النصية
+// 🔍 نظام الـ Headers الذكي
+// ============================================
+function getHeaders(url, refererOverride = null, originOverride = null) {
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'ar-EG,ar;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'cross-site',
+        'Cookie': 'googtrans=/auto/ar'
+    };
+
+    try {
+        const urlObj = new URL(url);
+        const hostname = urlObj.hostname;
+        const protocol = urlObj.protocol;
+
+        // خريطة مخصصة للـ Headers
+        const domainMap = {
+            'b-cdn.net': {
+                origin: 'https://vz-8b2563a6-02a.b-cdn.net',
+                referer: 'https://vz-8b2563a6-02a.b-cdn.net/'
+            },
+            'mediadelivery': {
+                origin: 'https://www.mediadelivery.net',
+                referer: 'https://www.mediadelivery.net/'
+            }
+        };
+
+        let foundOrigin = null;
+        let foundReferer = null;
+
+        for (const [key, config] of Object.entries(domainMap)) {
+            if (hostname.includes(key)) {
+                foundOrigin = config.origin;
+                foundReferer = config.referer;
+                break;
+            }
+        }
+
+        if (!foundOrigin) {
+            foundOrigin = `${protocol}//${hostname}`;
+            foundReferer = `${protocol}//${hostname}/`;
+        }
+
+        headers.Origin = originOverride || foundOrigin;
+        headers.Referer = refererOverride || foundReferer;
+
+    } catch (e) {
+        console.warn('⚠️ Error parsing URL:', e.message);
+    }
+
+    return headers;
+}
+
+// ============================================
+// 🔄 تعديل الروابط الداخلية لـ M3U8
+// ============================================
+function fixM3U8Links(data, baseUrl, proxyBase) {
+    let modifiedCount = 0;
+
+    // تعديل روابط .ts, .m4s, .mp4
+    data = data.replace(/^([^#][^\s]+\.(?:ts|m4s|mp4)[^\s]*)$/gm, (match, p1) => {
+        try {
+            const trimmed = p1.trim();
+            const absoluteUrl = new URL(trimmed, baseUrl).href;
+            modifiedCount++;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // تعديل روابط .m3u8 الفرعية
+    data = data.replace(/^([^#][^\s]+\.m3u8[^\s]*)$/gm, (match, p1) => {
+        try {
+            const trimmed = p1.trim();
+            const absoluteUrl = new URL(trimmed, baseUrl).href;
+            modifiedCount++;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // تعديل روابط .key
+    data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            modifiedCount++;
+            return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // تعديل EXT-X-MAP
+    data = data.replace(/EXT-X-MAP:URI="([^"]+)"/g, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            modifiedCount++;
+            return `EXT-X-MAP:URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    console.log(`📝 تم تعديل ${modifiedCount} رابط داخل M3U8`);
+    return data;
+}
+
+// ============================================
+// 📡 نقطة نهاية الوكيل الرئيسية (تشغيل الفيديو)
 // ============================================
 app.get('/api/stream', async (req, res) => {
     const url = req.query.url;
@@ -31,85 +149,96 @@ app.get('/api/stream', async (req, res) => {
         });
     }
 
+    const originOverride = req.query.origin || null;
+    const refererOverride = req.query.referer || null;
+
     console.log(`\n${'='.repeat(70)}`);
-    console.log(`🔄 طلب جديد في ${new Date().toLocaleTimeString('ar-EG')}`);
+    console.log(`🔄 طلب فيديو: ${new Date().toLocaleTimeString('ar-EG')}`);
     console.log(`📍 الرابط: ${url}`);
     console.log(`${'='.repeat(70)}\n`);
 
     try {
-        // ============================================
-        // 🔥 الـ Headers المطلوبة بالضبط
-        // ============================================
-        const headers = {
-            'Cookie': 'googtrans=/auto/ar',
-            'Accept': 'application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-            'Referer': url, // نفس الرابط
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Abck/4.0 Chrome/149.0.7827.159 Mobile Safari/537.36',
-            'Accept-Encoding': 'identity',
-            'Host': 'vz-8b2563a6-02a.b-cdn.net',
-            'Connection': 'Keep-Alive'
-        };
-
-        console.log('📌 الـ Headers المرسلة:');
-        console.log(JSON.stringify(headers, null, 2));
+        const headers = getHeaders(url, refererOverride, originOverride);
+        console.log(`📌 Origin: ${headers.Origin}`);
+        console.log(`📌 Referer: ${headers.Referer}`);
 
         // ============================================
-        // 📡 إرسال الطلب
+        // 📡 جلب المحتوى
         // ============================================
         const response = await fetch(url, {
-            method: 'GET',
             headers: headers,
-            redirect: 'manual'
+            redirect: 'follow',
+            timeout: 30000
         });
 
-        // ============================================
-        // 📊 عرض كل حاجة عن الرد
-        // ============================================
-        const statusCode = response.status;
-        const statusText = response.statusText;
-        const responseHeaders = {};
-        response.headers.forEach((value, key) => {
-            responseHeaders[key] = value;
-        });
-
-        // جلب النص
-        let bodyText = '';
-        try {
-            bodyText = await response.text();
-        } catch (e) {
-            bodyText = '⚠️ تعذر قراءة النص';
+        if (!response.ok) {
+            console.error(`❌ HTTP ${response.status}`);
+            return res.status(response.status).json({
+                error: `HTTP Error ${response.status}`,
+                details: response.statusText
+            });
         }
 
-        // ============================================
-        // 📤 الرد بالبيانات كاملة
-        // ============================================
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        const contentType = response.headers.get('content-type') || '';
+        const cleanPath = url.toLowerCase().split('?')[0];
         
-        const responseData = {
-            success: response.ok,
-            status: {
-                code: statusCode,
-                text: statusText
-            },
-            headers: responseHeaders,
-            body: bodyText,
-            bodyLength: bodyText.length,
-            url: url
-        };
+        // ============================================
+        // 🎯 تحديد نوع المحتوى
+        // ============================================
+        const isM3U8 = contentType.includes('mpegurl') ||
+                       contentType.includes('m3u') ||
+                       cleanPath.endsWith('.m3u8');
 
-        console.log(`✅ تم بنجاح! الحالة: ${statusCode}`);
-        res.json(responseData);
+        const proxyBase = `/api/stream`;
+        const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
+
+        // ============================================
+        // 🎬 إعدادات الـ Headers للرد
+        // ============================================
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, Content-Range');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
+        if (isM3U8) {
+            // 📝 معالجة M3U8
+            let text = await response.text();
+            console.log(`📄 M3U8: ${text.length} bytes`);
+
+            // تعديل الروابط
+            text = fixM3U8Links(text, baseUrl, proxyBase);
+
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+            res.send(text);
+
+        } else {
+            // 🎬 معالجة المقاطع (video segments, init.mp4, etc.)
+            const buffer = await response.buffer();
+            
+            const outContentType = contentType || 'video/mp4';
+            
+            res.setHeader('Content-Type', outContentType);
+            res.setHeader('Content-Length', buffer.length);
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            console.log(`📦 سيجمنت: ${buffer.length} bytes | Type: ${outContentType}`);
+            res.send(buffer);
+        }
+
+        console.log(`✅ تم بنجاح!\n`);
 
     } catch (error) {
         console.error('❌ خطأ:', error.message);
-        
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            url: url,
-            timestamp: new Date().toISOString()
-        });
+        console.error(error.stack);
+
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'Proxy error',
+                message: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
     }
 });
 
@@ -123,7 +252,7 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>📡 وكيل البث - عرض البيانات</title>
+            <title>🎬 وكيل البث - تشغيل الفيديو</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body {
@@ -205,33 +334,84 @@ app.get('/', (req, res) => {
                     font-size: 12px;
                     margin-left: 8px;
                 }
+                .player-container {
+                    background: #000;
+                    border-radius: 10px;
+                    overflow: hidden;
+                    margin: 20px 0;
+                }
+                video {
+                    width: 100%;
+                    display: block;
+                }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>📡 وكيل عرض البيانات <span class="badge">v3.0</span></h1>
+                <h1>🎬 وكيل البث المتقدم <span class="badge">v3.0</span></h1>
                 <div class="status">
                     <span style="font-size: 22px;">✅</span>
-                    <span>السيرفر جاهز لعرض بيانات الـ M3U8</span>
+                    <span>السيرفر جاهز لتشغيل الفيديو!</span>
+                </div>
+
+                <div class="player-container">
+                    <video id="videoPlayer" controls playsinline>
+                        <source id="videoSource" src="" type="application/vnd.apple.mpegurl">
+                        متصفحك لا يدعم تشغيل الفيديو
+                    </video>
                 </div>
 
                 <div class="section">
                     <h2>📖 كيفية الاستخدام</h2>
-                    <code>GET /api/stream?url=https://vz-8b2563a6-02a.b-cdn.net/b93e9b40-8622-4b48-8458-ec85e6b8a6aa/playlist.m3u8</code>
+                    <code>GET /api/stream?url=https://example.com/playlist.m3u8</code>
                     <div class="example">
-                        <strong>📌 النتيجة:</strong> هترجع JSON فيه كل بيانات الطلب (الحالة، الهيدرز، والنص)
+                        <strong>🎯 مثال:</strong>
+                        <br>
+                        <code style="background: #f5f5f5; color: #333; margin-top: 10px;">
+                            /api/stream?url=https://vz-8b2563a6-02a.b-cdn.net/b93e9b40-8622-4b48-8458-ec85e6b8a6aa/vp9_720p/video.m3u8
+                        </code>
                     </div>
                 </div>
 
                 <div class="section">
-                    <h2>🔧 مثال عملي</h2>
-                    <code>https://stream-proxy-production-9ae1.up.railway.app/api/stream?url=https://vz-8b2563a6-02a.b-cdn.net/b93e9b40-8622-4b48-8458-ec85e6b8a6aa/playlist.m3u8</code>
+                    <h2>🔧 روابط جاهزة للتشغيل</h2>
+                    <button onclick="playVideo('720p')" style="padding:10px 20px; margin:5px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer;">▶️ 720p</button>
+                    <button onclick="playVideo('480p')" style="padding:10px 20px; margin:5px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer;">▶️ 480p</button>
+                    <button onclick="playVideo('360p')" style="padding:10px 20px; margin:5px; background:#667eea; color:white; border:none; border-radius:5px; cursor:pointer;">▶️ 360p</button>
                 </div>
 
                 <div class="footer">
-                    <p>🔧 تم التعديل لعرض البيانات بدلاً من الفيديو</p>
+                    <p>🔧 تم التعديل لتشغيل الفيديو مباشرة</p>
                 </div>
             </div>
+
+            <script>
+                const baseUrl = window.location.origin;
+                const video = document.getElementById('videoPlayer');
+                const source = document.getElementById('videoSource');
+
+                function playVideo(quality) {
+                    const qualities = {
+                        '720p': 'vp9_720p/video.m3u8',
+                        '480p': 'vp9_480p/video.m3u8',
+                        '360p': 'vp9_360p/video.m3u8'
+                    };
+                    
+                    const url = baseUrl + '/api/stream?url=' + encodeURIComponent(
+                        'https://vz-8b2563a6-02a.b-cdn.net/b93e9b40-8622-4b48-8458-ec85e6b8a6aa/' + qualities[quality]
+                    );
+                    
+                    source.src = url;
+                    video.load();
+                    video.play();
+                    console.log('🎬 تشغيل:', url);
+                }
+
+                // تشغيل 480p تلقائياً عند فتح الصفحة
+                window.onload = function() {
+                    playVideo('480p');
+                };
+            </script>
         </body>
         </html>
     `);
@@ -246,15 +426,16 @@ app.listen(port, '0.0.0.0', () => {
     console.log(`
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                                                                       ║
-║           📡 وكيل عرض البيانات بدأ يعمل بنجاح! 🚀                   ║
+║           🎬 وكيل البث - تشغيل الفيديو 🚀                           ║
 ║                                                                       ║
 ║  📡 الخادم:  http://0.0.0.0:${port}
 ║  🌐 نقطة الوكيل:  /api/stream?url=<رابط_الـ_M3U8>
 ║                                                                       ║
 ║  📌 المميزات:                                                        ║
-║     • يبعث الطلب بالـ Headers المطلوبة بالضبط                      ║
-║     • يرجع الرد كامل (الحالة، الهيدرز، النص)                       ║
-║     • يعرض البيانات بصيغة JSON                                      ║
+║     • يشغل الفيديو مباشرة في المتصفح                               ║
+║     • يدعم HLS و MPEG-DASH                                          ║
+║     • يعالج الروابط الداخلية تلقائياً                              ║
+║     • واجهة مستخدم مع مشغل فيديو                                   ║
 ║                                                                       ║
 ╚═══════════════════════════════════════════════════════════════════════╝
     `);
