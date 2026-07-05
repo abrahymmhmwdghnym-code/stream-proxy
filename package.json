@@ -1,14 +1,36 @@
 {
-  "name": "stream-proxy",
-  "version": "1.0.0",
-  "description": "Smart proxy for HLS streams with token support",
-  "main": "server.js",
+  "name": "streaming-proxy-advanced",
+  "version": "2.0.0",
+  "description": "وكيل بث متقدم وذكي للفيديو والبث المباشر",
+  "main": "streaming-proxy-fixed.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node streaming-proxy-fixed.js",
+    "dev": "NODE_ENV=development node streaming-proxy-fixed.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "proxy",
+    "streaming",
+    "m3u8",
+    "video",
+    "hls",
+    "cors"
+  ],
+  "author": "Advanced Streaming Team",
+  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-fetch": "^2.6.7"
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/streaming-proxy"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/streaming-proxy/issues"
   }
 }
