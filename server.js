@@ -95,31 +95,68 @@ function buildHeaders(url, req) {
 }
 
 // ============================================
-// 🔄 تعديل الروابط في M3U8
+// 🔄 تعديل الروابط في M3U8 (المعدل)
 // ============================================
 function fixM3U8Links(data, baseUrl, proxyBase) {
     let modifiedCount = 0;
 
-    // تعديل روابط .ts, .m4s, .mp4, .m3u8, .key
-    const patterns = [
-        /^([^#][^\s]+\.(?:ts|m4s|mp4|m3u8|key)[^\s]*)$/gm,
-        /URI="([^"]+)"/g,
-        /EXT-X-MAP:URI="([^"]+)"/g
-    ];
-
-    patterns.forEach(pattern => {
-        data = data.replace(pattern, (match, p1) => {
-            try {
-                const trimmed = p1.trim();
-                const absoluteUrl = new URL(trimmed, baseUrl).href;
-                modifiedCount++;
-                return match.includes('URI=') || match.includes('EXT-X-MAP') 
-                    ? match.replace(p1, `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`)
-                    : `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
-            } catch (e) {
+    // 1️⃣ تعديل روابط .ts, .m4s, .mp4
+    data = data.replace(/^([^#][^\s]+\.(?:ts|m4s|mp4)[^\s]*)$/gm, (match, p1) => {
+        try {
+            const trimmed = p1.trim();
+            // ✅ منع التعديل المزدوج
+            if (trimmed.startsWith('/api/stream') || trimmed.includes('api/stream')) {
                 return match;
             }
-        });
+            const absoluteUrl = new URL(trimmed, baseUrl).href;
+            modifiedCount++;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // 2️⃣ تعديل روابط .m3u8 الفرعية
+    data = data.replace(/^([^#][^\s]+\.m3u8[^\s]*)$/gm, (match, p1) => {
+        try {
+            const trimmed = p1.trim();
+            if (trimmed.startsWith('/api/stream') || trimmed.includes('api/stream')) {
+                return match;
+            }
+            const absoluteUrl = new URL(trimmed, baseUrl).href;
+            modifiedCount++;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // 3️⃣ تعديل روابط .key
+    data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
+        try {
+            if (p1.startsWith('/api/stream') || p1.includes('api/stream')) {
+                return match;
+            }
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            modifiedCount++;
+            return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // 4️⃣ تعديل EXT-X-MAP
+    data = data.replace(/EXT-X-MAP:URI="([^"]+)"/g, (match, p1) => {
+        try {
+            if (p1.startsWith('/api/stream') || p1.includes('api/stream')) {
+                return match;
+            }
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            modifiedCount++;
+            return `EXT-X-MAP:URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
     });
 
     console.log(`📝 تم تعديل ${modifiedCount} رابط داخل M3U8`);
@@ -389,7 +426,7 @@ app.get('/', (req, res) => {
         </head>
         <body>
             <div class="container">
-                <h1>🎬 وكيل البث المتقدم <span class="badge">v4.0</span></h1>
+                <h1>🎬 وكيل البث المتقدم <span class="badge">v4.1</span></h1>
                 <div class="status">
                     <span style="font-size: 22px;">✅</span>
                     <span>السيرفر جاهز لتشغيل الفيديو!</span>
@@ -476,6 +513,7 @@ app.listen(port, '0.0.0.0', () => {
 ║     • يقلد طلبات المتصفح بالضبط (Cookies, Headers, Range)          ║
 ║     • يدعم Range Requests (التدفق الجزئي)                          ║
 ║     • يتعامل مع ETag و If-Modified-Since                           ║
+║     • ✅ منع التعديل المزدوج للروابط (حل مشكلة init.mp4)           ║
 ║     • واجهة مستخدم مع مشغل فيديو متكامل                           ║
 ║                                                                       ║
 ╚═══════════════════════════════════════════════════════════════════════╝
