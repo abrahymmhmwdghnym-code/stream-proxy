@@ -1,16 +1,22 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const http = require('http');
+const https = require('https');
 
 const app = express();
 app.use(cors());
 
 // ============================================
-// 💾 كاش السيجمنتات (يقلل التقطيع)
+// 🔌 Keep-Alive Agents (بيمنع فتح اتصال TLS جديد لكل سيجمنت)
 // ============================================
 
-const segmentCache = new Map();
-const CACHE_TTL = 30000; // 30 ثانية
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 256 });
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 256 });
+
+function getAgent(targetUrl) {
+    return targetUrl.startsWith('https') ? httpsAgent : httpAgent;
+}
 
 // ============================================
 // 🔍 النظام الذكي لاستخراج الـ Headers
@@ -182,7 +188,8 @@ async function fetchWithRedirects(url, headers, maxRedirects = 3) {
         const response = await fetch(currentUrl, { 
             headers, 
             redirect: 'manual',
-            timeout: 10000
+            timeout: 10000,
+            agent: getAgent(currentUrl)
         });
 
         if ([301, 302, 307, 308].includes(response.status)) {
@@ -224,15 +231,13 @@ app.get('/api/stream', async (req, res) => {
     const originOverride = req.query.origin ? decodeURIComponent(req.query.origin) : null;
     const refererOverride = req.query.referer ? decodeURIComponent(req.query.referer) : null;
 
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`🔄 طلب جديد في ${new Date().toLocaleTimeString()}`);
-    console.log(`📍 الرابط: ${url}`);
-    console.log(`${'='.repeat(60)}\n`);
-
     try {
         const headers = getHeaders(url, refererOverride, originOverride);
-        console.log(`📌 Origin: ${headers.Origin}`);
-        console.log(`📌 Referer: ${headers.Referer}`);
+
+        // تمرير Range header لو المشغل طلب جزء معين (مهم للـ seeking وبعض المشغلات)
+        if (req.headers.range) {
+            headers.Range = req.headers.range;
+        }
 
         let response;
         try {
@@ -268,52 +273,39 @@ app.get('/api/stream', async (req, res) => {
         if (isM3U8) {
             // ===== M3U8 =====
             let data = await response.text();
-            console.log(`📄 M3U8 الأصلي: ${data.length} byte`);
-            
             data = fixM3U8Links(data, baseUrl, proxyBase);
-            console.log(`✅ M3U8 المعدل: ${data.length} byte`);
             
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
             res.send(data);
         } else {
-            // ===== السيجمنتات مع كاش =====
-            const cacheKey = url;
-            
-            // التحقق من الكاش
-            if (segmentCache.has(cacheKey)) {
-                const cached = segmentCache.get(cacheKey);
-                if (Date.now() - cached.timestamp < CACHE_TTL) {
-                    console.log(`✅ من الكاش: ${url.substring(0, 60)}...`);
-                    res.setHeader('Content-Type', cached.contentType);
-                    res.setHeader('X-Cache', 'HIT');
-                    res.send(cached.data);
-                    return;
-                } else {
-                    segmentCache.delete(cacheKey);
-                }
-            }
-
-            const buffer = await response.buffer();
+            // ===== السيجمنتات: Streaming مباشر بدل ما ننزل الملف كامل في الميموري =====
             const isFakeFontSegment = cleanPath.endsWith('.woff2');
             const outContentType = isFakeFontSegment
                 ? 'video/mp2t'
                 : (contentType || 'video/mp2t');
-            
-            // تخزين في الكاش
-            segmentCache.set(cacheKey, {
-                data: buffer,
-                contentType: outContentType,
-                timestamp: Date.now()
+
+            res.status(response.status); // بيحافظ على 206 Partial Content لو فيه Range
+            res.setHeader('Content-Type', outContentType);
+
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) res.setHeader('Content-Length', contentLength);
+
+            const contentRange = response.headers.get('content-range');
+            if (contentRange) res.setHeader('Content-Range', contentRange);
+
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            // بمجرد ما أول بايت يوصل من المصدر، بيتبعت على طول للمشغل
+            response.body.pipe(res);
+
+            response.body.on('error', (err) => {
+                console.error('❌ خطأ أثناء الـ streaming:', err.message);
+                if (!res.headersSent) res.status(502).end();
+                else res.end();
             });
 
-            console.log(`📦 سيجمنت: ${buffer.length} bytes | Type: ${outContentType} | Cache: MISS`);
-            res.setHeader('Content-Type', outContentType);
-            res.setHeader('Content-Length', buffer.length);
-            res.setHeader('X-Cache', 'MISS');
-            res.send(buffer);
+            return; // مهم عشان ما نكملش تنفيذ الكود اللي بعده
         }
-
-        console.log(`✅ تم بنجاح!\n`);
 
     } catch (error) {
         console.error('❌ خطأ في الوكيل:', error.message);
@@ -437,11 +429,11 @@ app.get('/', (req, res) => {
                 <div class="section">
                     <h2>✨ التحسينات الجديدة</h2>
                     <ul class="feature-list">
-                        <li>🚀 كاش السيجمنتات (يقلل التقطيع)</li>
-                        <li>⚡ تحسين سرعة تعديل الروابط</li>
+                        <li>⚡ Streaming مباشر (Pipe) بدل تحميل السيجمنت كامل</li>
+                        <li>🔌 Keep-Alive Agent لتقليل زمن الاتصال بالمصدر</li>
+                        <li>🎯 دعم Range Requests للـ Seeking</li>
                         <li>📦 تقليل الـ Redirects</li>
                         <li>🔧 دعم أفضل لـ 360-sport و kora-yalla</li>
-                        <li>💾 تقليل استهلاك الباندويث</li>
                     </ul>
                 </div>
 
@@ -483,9 +475,9 @@ app.listen(port, () => {
 ║  📊 اللوحة:  http://${hostname}:${port}/
 ║                                                                ║
 ║  ✨ التحسينات:                                               ║
-║     • كاش السيجمنتات (30 ثانية)                            ║
-║     • تعديل أسرع للروابط                                   ║
-║     • تقليل الـ Redirects                                  ║
+║     • Streaming مباشر بدل buffer كامل                       ║
+║     • Keep-Alive Agent للاتصال بالمصدر                     ║
+║     • دعم Range requests                                   ║
 ║     • دعم 360-sport و kora-yalla                          ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
@@ -504,12 +496,3 @@ process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error);
 });
 
-// تنظيف الكاش كل دقيقة
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, value] of segmentCache.entries()) {
-        if (now - value.timestamp > CACHE_TTL) {
-            segmentCache.delete(key);
-        }
-    }
-}, 60000);
