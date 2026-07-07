@@ -83,6 +83,10 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
             'b-cdn.net': {
                 origin: 'https://iframe.mediadelivery.net',
                 referer: 'https://iframe.mediadelivery.net/'
+            },
+            'jdwel.com': {
+                origin: 'https://jdwel.com',
+                referer: 'https://jdwel.com/'
             }
         };
 
@@ -126,8 +130,8 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
 
     } catch (e) {
         console.warn('⚠️ Error parsing URL:', e.message);
-        headers.Origin = 'https://y2.sites10.top';
-        headers.Referer = 'https://y2.sites10.top/';
+        headers.Origin = 'https://jdwel.com';
+        headers.Referer = 'https://jdwel.com/';
     }
 
     return headers;
@@ -137,10 +141,9 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
 // 🔄 تعديل الروابط الداخلية لـ M3U8 (محسّن)
 // ============================================
 
-// اختيار جودة معينة من الـ Master Playlist (low = أقل جودة، high = أعلى جودة)
 function pickQuality(data, mode) {
-    if (!data.includes('#EXT-X-STREAM-INF')) return data; // مش master playlist أصلاً
-    if (mode !== 'low' && mode !== 'high') return data; // auto أو أي حاجة تانية = زي ما هو
+    if (!data.includes('#EXT-X-STREAM-INF')) return data;
+    if (mode !== 'low' && mode !== 'high') return data;
 
     const lines = data.split('\n');
     let targetBandwidth = mode === 'low' ? Infinity : -Infinity;
@@ -160,7 +163,7 @@ function pickQuality(data, mode) {
         }
     }
 
-    if (targetIndex === -1) return data; // مفيش BANDWIDTH ظاهر، رجّع زي ما هو
+    if (targetIndex === -1) return data;
 
     const header = lines.filter(l => l.startsWith('#EXTM3U') || l.startsWith('#EXT-X-VERSION'));
     const streamLine = lines[targetIndex];
@@ -172,7 +175,6 @@ function pickQuality(data, mode) {
 function fixM3U8Links(data, baseUrl, proxyBase) {
     let modifiedCount = 0;
 
-    // تعديل كل الروابط في تمريرة واحدة (أسرع)
     data = data.replace(/(https?:\/\/[^\s"']+\.(?:ts|m3u8|key|woff2))/g, (match) => {
         try {
             const absoluteUrl = new URL(match, baseUrl).href;
@@ -183,7 +185,6 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
         }
     });
 
-    // تعديل الروابط النسبية
     data = data.replace(/^([^#][^\s]+\.(?:ts|m3u8|key|woff2)[^\s]*)$/gm, (match, p1) => {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
@@ -194,7 +195,6 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
         }
     });
 
-    // تعديل روابط KEY داخل URI=""
     data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
         try {
             const absoluteUrl = new URL(p1, baseUrl).href;
@@ -210,137 +210,137 @@ function fixM3U8Links(data, baseUrl, proxyBase) {
 }
 
 // ============================================
-// 📡 جلب مع Redirects (محسّن)
+// 🌍 بروكسي متعدد الأغراض (نصوص، JSON، بيانات، M3U8)
 // ============================================
 
-async function fetchWithRedirects(url, headers, maxRedirects = 3) {
-    let currentUrl = url;
-
-    for (let i = 0; i < maxRedirects; i++) {
-        const response = await fetch(currentUrl, { 
-            headers, 
-            redirect: 'manual',
-            timeout: 10000,
-            agent: getAgent(currentUrl)
-        });
-
-        if ([301, 302, 307, 308].includes(response.status)) {
-            const location = response.headers.get('location') || '';
-            if (location.includes('google.com') || location.includes('captcha')) {
-                throw new Error('BLOCKED_REDIRECT');
-            }
-            if (!location) return response;
-            try {
-                currentUrl = new URL(location, currentUrl).href;
-                continue;
-            } catch (e) {
-                return response;
-            }
-        }
-        return response;
+// معالج بروكسي جديد يدعم طلبات JSON و HTML و M3U8
+app.get('/api/proxy', async (req, res) => {
+    const targetUrl = req.query.url;
+    
+    if (!targetUrl) {
+        return res.status(400).json({ error: 'Missing url parameter' });
     }
-    throw new Error('TOO_MANY_REDIRECTS');
-}
-
-// ============================================
-// 📡 نقطة نهاية الوكيل الرئيسية (مع كاش)
-// ============================================
-
-app.get('/api/stream', async (req, res) => {
-    const rawQuery = req.originalUrl.split('?').slice(1).join('?');
-    const urlMatch = rawQuery.match(/^url=(.+?)(?:&|$)/);
-
-    if (!urlMatch) {
-        return res.status(400).json({ 
-            error: 'Missing url parameter',
-            example: '/api/stream?url=https://example.com/playlist.m3u8'
-        });
-    }
-
-    let url = urlMatch[1];
-    try { url = decodeURIComponent(url); } catch (e) {}
-
-    const originOverride = req.query.origin ? decodeURIComponent(req.query.origin) : null;
-    const refererOverride = req.query.referer ? decodeURIComponent(req.query.referer) : null;
 
     try {
-        const headers = getHeaders(url, refererOverride, originOverride);
+        console.log(`🔗 بروكسي: ${targetUrl}`);
+        
+        const headers = getHeaders(targetUrl);
+        const agent = getAgent(targetUrl);
 
-        // تمرير Range header لو المشغل طلب جزء معين (مهم للـ seeking وبعض المشغلات)
+        const response = await fetch(targetUrl, {
+            headers,
+            agent,
+            timeout: 15000
+        });
+
+        if (!response.ok) {
+            console.warn(`⚠️ Server returned ${response.status}`);
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        
+        // حدد نوع الرد بناءً على content-type
+        let body;
+        if (contentType.includes('application/json')) {
+            body = await response.json();
+            res.type('application/json').send(body);
+        } else if (contentType.includes('text/html')) {
+            body = await response.text();
+            res.type('text/html').send(body);
+        } else if (contentType.includes('application/x-mpegURL') || contentType.includes('text/plain') || targetUrl.includes('.m3u8')) {
+            body = await response.text();
+            
+            // إذا كان M3U8، عدّل الروابط الداخلية
+            if (targetUrl.includes('.m3u8')) {
+                const baseUrl = new URL(targetUrl);
+                baseUrl.pathname = baseUrl.pathname.substring(0, baseUrl.pathname.lastIndexOf('/'));
+                const proxyBase = `${req.protocol}://${req.get('host')}/api/stream`;
+                body = fixM3U8Links(body, baseUrl.href, proxyBase);
+            }
+            
+            res.type('application/vnd.apple.mpegurl').send(body);
+        } else {
+            body = await response.buffer();
+            res.type(contentType).send(body);
+        }
+
+    } catch (error) {
+        console.error('❌ خطأ في البروكسي:', error.message);
+        res.status(500).json({ 
+            error: 'Proxy error',
+            message: error.message 
+        });
+    }
+});
+
+// معالج البث المحسّن (للـ streaming والـ segments)
+app.get('/api/stream', async (req, res) => {
+    const targetUrl = req.query.url;
+    const qualityMode = req.query.quality || 'auto';
+    const refererOverride = req.query.referer || null;
+    const originOverride = req.query.origin || null;
+
+    if (!targetUrl) {
+        return res.status(400).json({ error: 'Missing url parameter' });
+    }
+
+    try {
+        console.log(`🎬 بث: ${targetUrl.substring(0, 80)}...`);
+
+        const headers = getHeaders(targetUrl, refererOverride, originOverride);
+        
+        // أضف Range header إذا كان المتصفح طلبه
         if (req.headers.range) {
             headers.Range = req.headers.range;
         }
 
-        let response;
-        try {
-            response = await fetchWithRedirects(url, headers);
-        } catch (e) {
-            if (e.message === 'BLOCKED_REDIRECT') {
-                return res.status(403).json({ error: 'المحتوى محمي بـ Captcha أو مرشحات أمان' });
-            }
-            throw e;
-        }
+        const agent = getAgent(targetUrl);
 
-        if (!response.ok) {
-            console.error(`❌ HTTP ${response.status}`);
-            return res.status(response.status).json({ 
-                error: `HTTP Error ${response.status}`,
-                details: response.statusText 
-            });
-        }
+        const response = await fetch(targetUrl, {
+            headers,
+            agent,
+            timeout: 30000
+        });
 
-        const contentType = response.headers.get('content-type') || '';
-        const cleanPath = url.toLowerCase().split('?')[0];
-        const isM3U8 = contentType.includes('mpegurl') || 
-                       contentType.includes('m3u') || 
-                       cleanPath.endsWith('.m3u8');
-
-        const proxyBase = `/api/stream`;
-        const baseUrl = url.substring(0, url.lastIndexOf('/') + 1);
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, Cache-Control');
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-
-        if (isM3U8) {
-            // ===== M3U8 =====
-            let data = await response.text();
-            if (req.query.quality === 'low' || req.query.quality === 'high') {
-                data = pickQuality(data, req.query.quality);
-            }
-            data = fixM3U8Links(data, baseUrl, proxyBase);
+        // معالجة محتوى M3U8
+        if (targetUrl.includes('.m3u8')) {
+            let text = await response.text();
             
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
-            res.send(data);
-        } else {
-            // ===== السيجمنتات: Streaming مباشر بدل ما ننزل الملف كامل في الميموري =====
-            const isFakeFontSegment = cleanPath.endsWith('.woff2');
-            const outContentType = isFakeFontSegment
-                ? 'video/mp2t'
-                : (contentType || 'video/mp2t');
+            // اختر جودة إذا طُلب ذلك
+            if (qualityMode === 'low' || qualityMode === 'high') {
+                text = pickQuality(text, qualityMode);
+            }
+            
+            // عدّل الروابط الداخلية
+            const baseUrl = new URL(targetUrl);
+            baseUrl.pathname = baseUrl.pathname.substring(0, baseUrl.pathname.lastIndexOf('/'));
+            const proxyBase = `${req.protocol}://${req.get('host')}/api/stream`;
+            text = fixM3U8Links(text, baseUrl.href, proxyBase);
 
-            res.status(response.status); // بيحافظ على 206 Partial Content لو فيه Range
-            res.setHeader('Content-Type', outContentType);
-
-            const contentLength = response.headers.get('content-length');
-            if (contentLength) res.setHeader('Content-Length', contentLength);
-
-            const contentRange = response.headers.get('content-range');
-            if (contentRange) res.setHeader('Content-Range', contentRange);
-
-            res.setHeader('Accept-Ranges', 'bytes');
-
-            // بمجرد ما أول بايت يوصل من المصدر، بيتبعت على طول للمشغل
-            response.body.pipe(res);
-
-            response.body.on('error', (err) => {
-                console.error('❌ خطأ أثناء الـ streaming:', err.message);
-                if (!res.headersSent) res.status(502).end();
-                else res.end();
-            });
-
-            return; // مهم عشان ما نكملش تنفيذ الكود اللي بعده
+            res.type('application/vnd.apple.mpegurl').send(text);
+            return;
         }
+
+        // معالجة البيانات الثنائية (segments، keys، وغيرها)
+        const outContentType = response.headers.get('content-type') || 'application/octet-stream';
+        res.status(response.status);
+        res.setHeader('Content-Type', outContentType);
+
+        const contentLength = response.headers.get('content-length');
+        if (contentLength) res.setHeader('Content-Length', contentLength);
+
+        const contentRange = response.headers.get('content-range');
+        if (contentRange) res.setHeader('Content-Range', contentRange);
+
+        res.setHeader('Accept-Ranges', 'bytes');
+
+        response.body.pipe(res);
+
+        response.body.on('error', (err) => {
+            console.error('❌ خطأ أثناء الـ streaming:', err.message);
+            if (!res.headersSent) res.status(502).end();
+            else res.end();
+        });
 
     } catch (error) {
         console.error('❌ خطأ في الوكيل:', error.message);
@@ -362,7 +362,7 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>📡 وكيل البث</title>
+            <title>📡 وكيل البث المتقدم</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body {
@@ -425,6 +425,7 @@ app.get('/', (req, res) => {
                     overflow-x: auto;
                     font-size: 13px;
                     line-height: 1.5;
+                    word-break: break-all;
                 }
                 .feature-list {
                     list-style: none;
@@ -455,32 +456,40 @@ app.get('/', (req, res) => {
         </head>
         <body>
             <div class="container">
-                <h1>🚀 وكيل البث المحسّن</h1>
+                <h1>🚀 وكيل البث المتقدم</h1>
                 <div class="status">
                     <span style="font-size: 20px;">✅</span>
                     <span>الخادم يعمل بكفاءة عالية</span>
                 </div>
 
                 <div class="section">
-                    <h2>✨ التحسينات الجديدة</h2>
+                    <h2>✨ الميزات</h2>
                     <ul class="feature-list">
+                        <li>📡 بروكسي CORS شامل (JSON، HTML، M3U8)</li>
                         <li>⚡ Streaming مباشر (Pipe) بدل تحميل السيجمنت كامل</li>
-                        <li>🔌 Keep-Alive Agent لتقليل زمن الاتصال بالمصدر</li>
-                        <li>🎯 دعم Range Requests للـ Seeking</li>
-                        <li>📦 تقليل الـ Redirects</li>
-                        <li>🔧 دعم أفضل لـ 360-sport و kora-yalla</li>
+                        <li>🔌 Keep-Alive Agent لتقليل زمن الاتصال</li>
+                        <li>🎯 دعم كامل للـ Range Requests</li>
+                        <li>📦 تقليل الـ Redirects وتعديل M3U8 تلقائي</li>
+                        <li>🔧 دعم متقدم للـ Headers والـ User Agents</li>
                     </ul>
                 </div>
 
                 <div class="section">
-                    <h2>📖 كيفية الاستخدام</h2>
+                    <h2>📖 نقاط النهاية</h2>
+                    <h3 style="color: #555; margin-top: 10px;">🎬 بث الفيديو:</h3>
                     <code>GET /api/stream?url=https://example.com/playlist.m3u8</code>
+                    <h3 style="color: #555; margin-top: 15px;">📄 البيانات و CORS:</h3>
+                    <code>GET /api/proxy?url=https://api.example.com/data</code>
                 </div>
 
                 <div class="section">
                     <h2>⚙️ خيارات متقدمة</h2>
-                    <code>GET /api/stream?url=...&origin=https://...&referer=https://...</code>
-                    <p style="margin-top: 10px; color: #666;">تخصيص Origin و Referer يدوياً</p>
+                    <code>GET /api/stream?url=...&quality=low&referer=https://...</code>
+                    <p style="margin-top: 10px; color: #666;">
+                        <strong>quality</strong>: low | high | auto (افتراضي)<br>
+                        <strong>referer</strong>: Referer مخصص<br>
+                        <strong>origin</strong>: Origin مخصص
+                    </p>
                 </div>
 
                 <div class="footer">
@@ -503,17 +512,19 @@ app.listen(port, () => {
     console.log(`
 ╔════════════════════════════════════════════════════════════════╗
 ║                                                                ║
-║        🚀 وكيل البث المحسّن بدأ يعمل بنجاح! 🚀              ║
+║     🚀 وكيل البث المتقدم بدأ يعمل بنجاح! 🚀                 ║
 ║                                                                ║
-║  📡 الخادم:  http://${hostname}:${port}
-║  🌐 الوكيل:  http://${hostname}:${port}/api/stream
-║  📊 اللوحة:  http://${hostname}:${port}/
+║  📡 الخادم:   http://${hostname}:${port}
+║  🎬 البث:    http://${hostname}:${port}/api/stream
+║  📄 البروكسي:  http://${hostname}:${port}/api/proxy
+║  📊 اللوحة:   http://${hostname}:${port}/
 ║                                                                ║
-║  ✨ التحسينات:                                               ║
+║  ✨ الميزات:                                                  ║
+║     • بروكسي CORS شامل (JSON + HTML + M3U8)                 ║
 ║     • Streaming مباشر بدل buffer كامل                       ║
 ║     • Keep-Alive Agent للاتصال بالمصدر                     ║
-║     • دعم Range requests                                   ║
-║     • دعم 360-sport و kora-yalla                          ║
+║     • دعم كامل للـ Range requests                           ║
+║     • تعديل M3U8 تلقائي + تقليل redirects                 ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
     `);
@@ -530,4 +541,3 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error);
 });
-
