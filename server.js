@@ -137,6 +137,38 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
 // 🔄 تعديل الروابط الداخلية لـ M3U8 (محسّن)
 // ============================================
 
+// اختيار جودة معينة من الـ Master Playlist (low = أقل جودة، high = أعلى جودة)
+function pickQuality(data, mode) {
+    if (!data.includes('#EXT-X-STREAM-INF')) return data; // مش master playlist أصلاً
+    if (mode !== 'low' && mode !== 'high') return data; // auto أو أي حاجة تانية = زي ما هو
+
+    const lines = data.split('\n');
+    let targetBandwidth = mode === 'low' ? Infinity : -Infinity;
+    let targetIndex = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+            const match = lines[i].match(/BANDWIDTH=(\d+)/);
+            if (match) {
+                const bw = parseInt(match[1], 10);
+                const better = mode === 'low' ? (bw < targetBandwidth) : (bw > targetBandwidth);
+                if (better) {
+                    targetBandwidth = bw;
+                    targetIndex = i;
+                }
+            }
+        }
+    }
+
+    if (targetIndex === -1) return data; // مفيش BANDWIDTH ظاهر، رجّع زي ما هو
+
+    const header = lines.filter(l => l.startsWith('#EXTM3U') || l.startsWith('#EXT-X-VERSION'));
+    const streamLine = lines[targetIndex];
+    const urlLine = lines[targetIndex + 1];
+
+    return [...header, streamLine, urlLine].join('\n');
+}
+
 function fixM3U8Links(data, baseUrl, proxyBase) {
     let modifiedCount = 0;
 
@@ -273,6 +305,9 @@ app.get('/api/stream', async (req, res) => {
         if (isM3U8) {
             // ===== M3U8 =====
             let data = await response.text();
+            if (req.query.quality === 'low' || req.query.quality === 'high') {
+                data = pickQuality(data, req.query.quality);
+            }
             data = fixM3U8Links(data, baseUrl, proxyBase);
             
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
