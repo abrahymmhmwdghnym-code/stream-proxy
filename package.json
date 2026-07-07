@@ -2,7 +2,7 @@
   "name": "streaming-proxy-advanced",
   "version": "3.0.0",
   "description": "وكيل بث متقدم - عرض بيانات الـ M3U8",
-  "main": "srver.js",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
