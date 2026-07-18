@@ -3,14 +3,14 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const http = require('http');
 const https = require('https');
-const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
 
 // ============================================
-// 🔌 Keep-Alive Agents
+// 🔌 Keep-Alive Agents (بيمنع فتح اتصال TLS جديد لكل سيجمنت)
 // ============================================
+
 const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 256 });
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 256 });
 
@@ -19,55 +19,19 @@ function getAgent(targetUrl) {
 }
 
 // ============================================
-// 🗺️ Cache للمفاتيح المستخرجة من x-km
+// 🔍 النظام الذكي لاستخراج الـ Headers
 // ============================================
-const keyCache = new Map(); // key: baseUrl (أو videoId), value: { key: Buffer, ivMap: Map (segmentName -> IV) }
 
-// ============================================
-// 🔑 استخراج المفتاح من x-km
-// ============================================
-function extractKeyFromXKm(xKmHeader) {
-    try {
-        const decoded = Buffer.from(xKmHeader, 'base64').toString('utf-8');
-        const json = JSON.parse(decoded);
-        // نبحث عن أول مفتاح ينتهي بـ "_k_0.key" أو أي مفتاح
-        for (const [keyName, keyValue] of Object.entries(json)) {
-            if (keyName.endsWith('_k_0.key') || keyName.includes('_k_0')) {
-                return keyValue;
-            }
-        }
-        // إذا لم نجد، نأخذ أول قيمة
-        const firstKey = Object.values(json)[0];
-        return firstKey;
-    } catch (e) {
-        console.error('❌ فشل فك x-km:', e.message);
-        return null;
-    }
-}
-
-// ============================================
-// 🔓 فك تشفير قطعة (AES-128-CBC)
-// ============================================
-function decryptSegment(encryptedData, keyBuffer, ivBuffer) {
-    const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuffer, ivBuffer);
-    let decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-    const padLen = decrypted[decrypted.length - 1];
-    return decrypted.slice(0, decrypted.length - padLen);
-}
-
-// ============================================
-// 🔍 نظام استخراج الـ Headers (معدل لـ Thanawica)
-// ============================================
 function getHeaders(url, refererOverride = null, originOverride = null) {
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36',
         'Accept': '*/*',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'ar-EG,ar;q=0.9,en-EG;q=0.8,en-US;q=0.7,en;q=0.6',
-        'sec-ch-ua': '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+        'sec-ch-ua': '"Android WebView";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
         'sec-ch-ua-mobile': '?1',
         'sec-ch-ua-platform': '"Android"',
-        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Site': 'cross-site',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
         'Priority': 'u=1, i',
@@ -79,21 +43,6 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
 
-        // ===== معالجة خاصة لـ Thanawica =====
-        if (hostname.includes('thanawica.com')) {
-            headers.Origin = 'https://thanawica.com';
-            headers.Referer = 'https://thanawica.com/sw.js';
-            // Cookies من الطلب الأصلي (ثابتة حالياً)
-            headers.Cookie = 'student_code=60261231; student_session=b814937e84ba002c21f188c013cea0b3d42872307f494fae71f8ebeb48a3334a; student_device=ebcd96d3d82250c2b23bdb6b8ceb84cddd19de32cbd427f4aa05f70f9df70ee4; cf_clearance=EVk.t9ncEQagN8yx.XsNYSGbKsgREnZqF75Kl.ikeoE-1784041322-1.2.1.1-eCDQiKLh8oRnqpmicKA6oyAjcdfaj16.5eG1DGhA1uWLsEDl5ynZoIdFGrG813gsw36bKLzC7zxDxbkw1cR0Sc9YIImyJ8v8_nvKLKpPpOp_0JTqIin0bee33elvndnCj2iS0_3fqXV8A4VvCeecZZPZjxQhVyVE7cQBvzGFQlIRlYYvn3UCQnhh7M6o3zIYuJo7bBDJKI.s2eWYIq2XTwbTIg6JrU3KCr.G13G1e9b4X_lzLUCYU2HHb.DiIE.zS_Amc0zCFw5dd4B2WiBtnmvSrddUfVz7GIO8bFr06I.Z99StxsYFa93PIYFViMvJNEQS92PcDafXX3.qaO8.sw; student_device_proof=60261231.9adfc84af4086a313436855f2eb2a600a446a43657802f6337eaaa365b7c412a.b11650d95b1bc57d3a5ca05c866829f0eb7e637efe638f70e1d91381ae0a3833.1784041503.c-m_19MMFdUguyPZUgiUM5SGVSzt2Ddp_tvKcjJcO68';
-            
-            // السماح بتجاوز الـ Referer و Origin
-            if (refererOverride) headers.Referer = refererOverride;
-            if (originOverride) headers.Origin = originOverride;
-            
-            return headers;
-        }
-
-        // ===== باقي المواقع (كما في الكود الأصلي) =====
         const domainMap = {
             '360-sport': {
                 origin: 'https://y2.sites10.top',
@@ -185,67 +134,110 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
 }
 
 // ============================================
-// 📝 تعديل الروابط في M3U8 (مع إضافة IV)
+// 🔄 تعديل الروابط الداخلية لـ M3U8 (محسّن)
 // ============================================
-function fixM3U8Links(data, baseUrl, proxyBase, videoId) {
+
+// اختيار جودة معينة من الـ Master Playlist (low = أقل جودة، high = أعلى جودة)
+function pickQuality(data, mode) {
+    if (!data.includes('#EXT-X-STREAM-INF')) return data; // مش master playlist أصلاً
+    if (mode !== 'low' && mode !== 'high') return data; // auto أو أي حاجة تانية = زي ما هو
+
     const lines = data.split('\n');
-    const newLines = [];
-    let currentIV = null;
-    let modifiedCount = 0;
+    let targetBandwidth = mode === 'low' ? Infinity : -Infinity;
+    let targetIndex = -1;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        newLines.push(line);
-
-        // البحث عن IV في سطر #EXT-X-KEY
-        if (line.startsWith('#EXT-X-KEY') && line.includes('IV=0x')) {
-            const match = line.match(/IV=0x([a-fA-F0-9]+)/);
+        if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+            const match = lines[i].match(/BANDWIDTH=(\d+)/);
             if (match) {
-                currentIV = match[1];
-                // نضيف IV إلى cache لكل قطعة قادمة
+                const bw = parseInt(match[1], 10);
+                const better = mode === 'low' ? (bw < targetBandwidth) : (bw > targetBandwidth);
+                if (better) {
+                    targetBandwidth = bw;
+                    targetIndex = i;
+                }
             }
-        }
-
-        // إذا كان السطر يحتوي على رابط قطعة (لا يبدأ بـ #)
-        if (line && !line.startsWith('#') && !line.startsWith('http') && line.includes('.dat')) {
-            const segmentName = line.trim();
-            // إذا كان هناك IV محفوظ، نضيفه كـ query param
-            let newUrl = segmentName;
-            if (currentIV) {
-                const separator = segmentName.includes('?') ? '&' : '?';
-                newUrl = `${segmentName}${separator}iv=${currentIV}`;
-            }
-            // تعديل الرابط ليصبح عبر الوكيل
-            try {
-                const absoluteUrl = new URL(newUrl, baseUrl).href;
-                const proxiedUrl = `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
-                newLines[newLines.length - 1] = proxiedUrl;
-                modifiedCount++;
-            } catch (e) {
-                // في حال فشل التحويل، نتركه كما هو
-            }
-            // إعادة تعيين IV بعد استخدامه (لأن كل قطعة لها IV خاص بها)
-            currentIV = null;
         }
     }
 
-    console.log(`📝 تم تعديل ${modifiedCount} رابط داخل M3U8 (مع IV)`);
-    return newLines.join('\n');
+    if (targetIndex === -1) return data; // مفيش BANDWIDTH ظاهر، رجّع زي ما هو
+
+    const header = lines.filter(l => l.startsWith('#EXTM3U') || l.startsWith('#EXT-X-VERSION'));
+    const streamLine = lines[targetIndex];
+    const urlLine = lines[targetIndex + 1];
+
+    return [...header, streamLine, urlLine].join('\n');
+}
+
+function fixM3U8Links(data, baseUrl, proxyBase) {
+    let modifiedCount = 0;
+
+    // تعديل كل الروابط في تمريرة واحدة (أسرع)
+    data = data.replace(/(https?:\/\/[^\s"']+\.(?:ts|m3u8|key|woff2))/g, (match) => {
+        try {
+            const absoluteUrl = new URL(match, baseUrl).href;
+            modifiedCount++;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // تعديل الروابط النسبية
+    data = data.replace(/^([^#][^\s]+\.(?:ts|m3u8|key|woff2)[^\s]*)$/gm, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            modifiedCount++;
+            return `${proxyBase}?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // تعديل روابط KEY داخل URI=""
+    data = data.replace(/URI="([^"]+)"/g, (match, p1) => {
+        try {
+            const absoluteUrl = new URL(p1, baseUrl).href;
+            modifiedCount++;
+            return `URI="${proxyBase}?url=${encodeURIComponent(absoluteUrl)}"`;
+        } catch (e) {
+            return match;
+        }
+    });
+
+    console.log(`📝 تم تعديل ${modifiedCount} رابط داخل M3U8`);
+    return data;
 }
 
 // ============================================
-// 📡 جلب مع Redirects
+// 📡 جلب مع Redirects (محسّن)
 // ============================================
-async function fetchWithRedirects(url, headers, maxRedirects = 3) {
+
+async function fetchWithRedirects(url, headers, maxRedirects = 3, signal = null) {
     let currentUrl = url;
 
     for (let i = 0; i < maxRedirects; i++) {
-        const response = await fetch(currentUrl, { 
-            headers, 
-            redirect: 'manual',
-            timeout: 10000,
-            agent: getAgent(currentUrl)
-        });
+        // تايم-آوت حقيقي بيقفل الاتصال فعليًا لو المصدر سكت، بدل ما نعتمد على
+        // الـ timeout الداخلي في node-fetch (اللي مش بيغطي كل حالات التعليق)
+        const timeoutController = new AbortController();
+        const timeoutId = setTimeout(() => timeoutController.abort(), 10000);
+
+        // لو فيه signal جاي من الطلب الأساسي (يتلغي لو المستخدم قفل الاتصال)
+        const onExternalAbort = () => timeoutController.abort();
+        if (signal) signal.addEventListener('abort', onExternalAbort);
+
+        let response;
+        try {
+            response = await fetch(currentUrl, {
+                headers,
+                redirect: 'manual',
+                agent: getAgent(currentUrl),
+                signal: timeoutController.signal
+            });
+        } finally {
+            clearTimeout(timeoutId);
+            if (signal) signal.removeEventListener('abort', onExternalAbort);
+        }
 
         if ([301, 302, 307, 308].includes(response.status)) {
             const location = response.headers.get('location') || '';
@@ -266,8 +258,9 @@ async function fetchWithRedirects(url, headers, maxRedirects = 3) {
 }
 
 // ============================================
-// 🌐 نقطة نهاية الوكيل الرئيسية
+// 📡 نقطة نهاية الوكيل الرئيسية (مع كاش)
 // ============================================
+
 app.get('/api/stream', async (req, res) => {
     const rawQuery = req.originalUrl.split('?').slice(1).join('?');
     const urlMatch = rawQuery.match(/^url=(.+?)(?:&|$)/);
@@ -285,17 +278,23 @@ app.get('/api/stream', async (req, res) => {
     const originOverride = req.query.origin ? decodeURIComponent(req.query.origin) : null;
     const refererOverride = req.query.referer ? decodeURIComponent(req.query.referer) : null;
 
+    // AbortController خاص بالطلب ده: لو المستخدم قفل الاتصال (غيّر سيجمنت، قفل
+    // البلاير، إلخ) بنلغي الفetch فورًا بدل ما نسيب الـ socket مشغول لحد ما
+    // upstream يقرر يقفل لوحده. ده اللي كان بيسبب تراكم الـ sockets والتعليق.
+    const abortController = new AbortController();
+    req.on('close', () => abortController.abort());
+
     try {
         const headers = getHeaders(url, refererOverride, originOverride);
 
-        // تمرير Range header
+        // تمرير Range header لو المشغل طلب جزء معين (مهم للـ seeking وبعض المشغلات)
         if (req.headers.range) {
             headers.Range = req.headers.range;
         }
 
         let response;
         try {
-            response = await fetchWithRedirects(url, headers);
+            response = await fetchWithRedirects(url, headers, 3, abortController.signal);
         } catch (e) {
             if (e.message === 'BLOCKED_REDIRECT') {
                 return res.status(403).json({ error: 'المحتوى محمي بـ Captcha أو مرشحات أمان' });
@@ -324,326 +323,66 @@ app.get('/api/stream', async (req, res) => {
         res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, Cache-Control');
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
-        // ============================================
-        // 📄 معالجة M3U8
-        // ============================================
         if (isM3U8) {
+            // ===== M3U8 =====
             let data = await response.text();
-
-            // استخراج المفتاح من x-km إذا كان الموقع Thanawica
-            const xKm = response.headers.get('x-km');
-            let videoId = null;
-            if (xKm && url.includes('thanawica.com')) {
-                const keyHex = extractKeyFromXKm(xKm);
-                if (keyHex) {
-                    // تخزين المفتاح في cache باستخدام baseUrl كمعرف
-                    const cacheKey = baseUrl;
-                    keyCache.set(cacheKey, {
-                        key: Buffer.from(keyHex, 'hex'),
-                        ivMap: new Map()
-                    });
-                    console.log(`🔑 تم تخزين المفتاح لـ ${cacheKey}: ${keyHex}`);
-                    // استخراج videoId من الرابط لتحديد فريد
-                    const match = url.match(/\/videos\/(\d+)/);
-                    if (match) videoId = match[1];
-                }
+            if (req.query.quality === 'low' || req.query.quality === 'high') {
+                data = pickQuality(data, req.query.quality);
             }
-
-            // تعديل الروابط مع إضافة IV
-            data = fixM3U8Links(data, baseUrl, proxyBase, videoId);
-
+            data = fixM3U8Links(data, baseUrl, proxyBase);
+            
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
             res.send(data);
-            return;
+        } else {
+            // ===== السيجمنتات: Streaming مباشر بدل ما ننزل الملف كامل في الميموري =====
+            const isFakeFontSegment = cleanPath.endsWith('.woff2');
+            const outContentType = isFakeFontSegment
+                ? 'video/mp2t'
+                : (contentType || 'video/mp2t');
+
+            res.status(response.status); // بيحافظ على 206 Partial Content لو فيه Range
+            res.setHeader('Content-Type', outContentType);
+
+            const contentLength = response.headers.get('content-length');
+            if (contentLength) res.setHeader('Content-Length', contentLength);
+
+            const contentRange = response.headers.get('content-range');
+            if (contentRange) res.setHeader('Content-Range', contentRange);
+
+            res.setHeader('Accept-Ranges', 'bytes');
+
+            // بمجرد ما أول بايت يوصل من المصدر، بيتبعت على طول للمشغل
+            response.body.pipe(res);
+
+            response.body.on('error', (err) => {
+                console.error('❌ خطأ أثناء الـ streaming:', err.message);
+                if (!res.headersSent) res.status(502).end();
+                else res.end();
+            });
+
+            return; // مهم عشان ما نكملش تنفيذ الكود اللي بعده
         }
-
-        // ============================================
-        // 🎬 معالجة القطع (.dat أو أي ملف)
-        // ============================================
-        // التحقق إذا كان طلب قطعة من Thanawica (تحتوي على /c/ و .dat)
-        if (cleanPath.includes('/c/') && cleanPath.endsWith('.dat')) {
-            console.log(`🔐 تحميل قطعة مشفرة: ${url}`);
-
-            // جلب البيانات المشفرة
-            const encryptedData = await response.buffer();
-            console.log(`📦 حجم البيانات المشفرة: ${encryptedData.length} بايت`);
-
-            // استخراج IV من query param (إذا كان موجوداً)
-            const ivHex = req.query.iv;
-            if (!ivHex) {
-                console.warn('⚠️ لا يوجد IV في الطلب، إرسال البيانات كما هي');
-                res.setHeader('Content-Type', contentType || 'video/mp2t');
-                res.send(encryptedData);
-                return;
-            }
-
-            // استرجاع المفتاح من cache باستخدام baseUrl
-            const cacheKey = baseUrl;
-            const cached = keyCache.get(cacheKey);
-            if (!cached) {
-                console.warn('⚠️ لم يتم العثور على مفتاح في cache، إرسال البيانات كما هي');
-                res.setHeader('Content-Type', contentType || 'video/mp2t');
-                res.send(encryptedData);
-                return;
-            }
-
-            const keyBuffer = cached.key;
-            const ivBuffer = Buffer.from(ivHex, 'hex');
-
-            try {
-                const decryptedData = decryptSegment(encryptedData, keyBuffer, ivBuffer);
-                console.log(`✅ فك التشفير نجح - الحجم: ${decryptedData.length} بايت`);
-
-                res.setHeader('Content-Type', 'video/mp4');
-                res.setHeader('Content-Length', decryptedData.length);
-                res.setHeader('Accept-Ranges', 'bytes');
-                res.send(decryptedData);
-            } catch (decryptError) {
-                console.error('❌ فشل فك التشفير:', decryptError.message);
-                // إرسال البيانات المشفرة كحل احتياطي
-                res.setHeader('Content-Type', contentType || 'video/mp2t');
-                res.send(encryptedData);
-            }
-            return;
-        }
-
-        // ============================================
-        // 📦 أي ملف آخر (مفاتيح، صور، إلخ)
-        // ============================================
-        const data = await response.buffer();
-        res.setHeader('Content-Type', contentType || 'application/octet-stream');
-        res.send(data);
 
     } catch (error) {
+        if (error.name === 'AbortError' || abortController.signal.aborted) {
+            // المستخدم قفل الاتصال أو حصل تايم-آوت طبيعي، مفيش داعي نبعت رد
+            console.warn('⚠️ الطلب اتلغى (قفل اتصال أو تايم-آوت):', url);
+            return;
+        }
         console.error('❌ خطأ في الوكيل:', error.message);
-        res.status(500).json({ 
-            error: 'Proxy error',
-            message: error.message 
-        });
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                error: 'Proxy error',
+                message: error.message 
+            });
+        }
     }
-});
-
-// ============================================
-// 🎬 مشغل فيديو (مع دعم فك التشفير)
-// ============================================
-app.get('/player', (req, res) => {
-    res.type('text/html').send(`
-        <!DOCTYPE html>
-        <html dir="rtl">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-            <title>🎬 مشغل الفيديو - Thanawica</title>
-            <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet" />
-            <style>
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                body {
-                    background: #0a0a0a;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    min-height: 100vh;
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    padding: 20px;
-                }
-                .container {
-                    width: 100%;
-                    max-width: 900px;
-                    background: #1a1a1a;
-                    border-radius: 16px;
-                    padding: 20px;
-                    box-shadow: 0 20px 60px rgba(0,0,0,0.8);
-                }
-                .video-wrapper {
-                    position: relative;
-                    background: #000;
-                    border-radius: 12px;
-                    overflow: hidden;
-                }
-                #my-video {
-                    width: 100%;
-                    height: auto;
-                    aspect-ratio: 16 / 9;
-                }
-                .video-js .vjs-big-play-button {
-                    background: rgba(102, 126, 234, 0.8) !important;
-                    border-radius: 50% !important;
-                    width: 80px !important;
-                    height: 80px !important;
-                    line-height: 80px !important;
-                    margin-left: -40px !important;
-                    margin-top: -40px !important;
-                    border: 3px solid rgba(255,255,255,0.3) !important;
-                }
-                .video-js .vjs-big-play-button:hover {
-                    background: #667eea !important;
-                }
-                .info {
-                    margin-top: 15px;
-                    padding: 15px;
-                    background: #222;
-                    border-radius: 8px;
-                    color: #aaa;
-                    font-size: 14px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    flex-wrap: wrap;
-                    gap: 10px;
-                }
-                .info .status {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                }
-                .info .status .dot {
-                    width: 10px;
-                    height: 10px;
-                    border-radius: 50%;
-                    display: inline-block;
-                }
-                .dot.green { background: #4caf50; }
-                .dot.yellow { background: #ffc107; }
-                .dot.red { background: #f44336; }
-                .controls {
-                    display: flex;
-                    gap: 10px;
-                    align-items: center;
-                    flex-wrap: wrap;
-                }
-                .controls input {
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    border: 1px solid #444;
-                    background: #333;
-                    color: #fff;
-                    font-size: 13px;
-                    width: 200px;
-                }
-                .controls button {
-                    padding: 8px 16px;
-                    border: none;
-                    border-radius: 6px;
-                    background: #667eea;
-                    color: #fff;
-                    cursor: pointer;
-                    font-size: 13px;
-                    transition: background 0.3s;
-                }
-                .controls button:hover {
-                    background: #764ba2;
-                }
-                .controls button:disabled {
-                    opacity: 0.5;
-                    cursor: not-allowed;
-                }
-                @media (max-width: 600px) {
-                    .container { padding: 10px; }
-                    .controls input { width: 100%; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="video-wrapper">
-                    <video
-                        id="my-video"
-                        class="video-js vjs-big-play-centered vjs-16-9"
-                        controls
-                        preload="auto"
-                        poster=""
-                        data-setup='{"fluid": true, "autoplay": false, "preload": "auto"}'
-                    >
-                        <source src="" type="video/mp4" id="video-source">
-                        <p class="vjs-no-js">
-                            لتشغيل هذا الفيديو، يرجى تفعيل JavaScript في متصفحك.
-                        </p>
-                    </video>
-                </div>
-
-                <div class="info">
-                    <div class="status">
-                        <span class="dot green" id="statusDot"></span>
-                        <span id="statusText">جاهز للتشغيل</span>
-                    </div>
-                    <div class="controls">
-                        <input type="text" id="videoIdInput" placeholder="أدخل ID الفيديو (مثال: 1667)" value="1665">
-                        <button id="loadBtn">🎬 تحميل</button>
-                    </div>
-                </div>
-            </div>
-
-            <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
-            <script>
-                const player = videojs('my-video');
-                const videoSource = document.getElementById('video-source');
-                const statusDot = document.getElementById('statusDot');
-                const statusText = document.getElementById('statusText');
-                const loadBtn = document.getElementById('loadBtn');
-                const videoIdInput = document.getElementById('videoIdInput');
-
-                function setStatus(type, text) {
-                    statusDot.className = 'dot ' + type;
-                    statusText.textContent = text;
-                }
-
-                function loadVideo(videoId) {
-                    setStatus('yellow', 'جاري التحميل...');
-                    
-                    const proxyBase = window.location.origin + '/api/stream';
-                    const m3u8Url = \`https://thanawica.com/lectures/\${videoId}/videos/\${videoId}\`;
-                    const proxyUrl = \`\${proxyBase}?url=\${encodeURIComponent(m3u8Url)}\`;
-                    
-                    fetch(proxyUrl)
-                        .then(response => {
-                            if (!response.ok) throw new Error('HTTP ' + response.status);
-                            return response.text();
-                        })
-                        .then(m3u8Data => {
-                            // نبحث عن أول قطعة .dat في الـ m3u8
-                            const lines = m3u8Data.split('\\n');
-                            let segmentUrl = null;
-                            for (const line of lines) {
-                                if (line.includes('.dat') && !line.startsWith('#')) {
-                                    segmentUrl = line.trim();
-                                    break;
-                                }
-                            }
-                            if (!segmentUrl) {
-                                setStatus('red', '❌ لم يتم العثور على قطعة فيديو');
-                                return;
-                            }
-                            // نأخذ الرابط الكامل
-                            const fullUrl = new URL(segmentUrl, window.location.origin).href;
-                            videoSource.src = fullUrl;
-                            player.src({ src: fullUrl, type: 'video/mp4' });
-                            player.load();
-                            player.play();
-                            setStatus('green', '✅ جاري التشغيل');
-                        })
-                        .catch(error => {
-                            console.error('Error:', error);
-                            setStatus('red', '❌ فشل التحميل: ' + error.message);
-                        });
-                }
-
-                loadBtn.addEventListener('click', () => {
-                    const videoId = videoIdInput.value.trim() || '1665';
-                    loadVideo(videoId);
-                });
-
-                window.addEventListener('load', () => {
-                    loadVideo('1665');
-                });
-            </script>
-        </body>
-        </html>
-    `);
 });
 
 // ============================================
 // 📊 لوحة المعلومات
 // ============================================
+
 app.get('/', (req, res) => {
     res.type('text/html').send(`
         <!DOCTYPE html>
@@ -651,7 +390,7 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>🚀 وكيل Thanawica</title>
+            <title>📡 وكيل البث</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body {
@@ -700,6 +439,9 @@ app.get('/', (req, res) => {
                     color: #333;
                     font-size: 18px;
                     margin-bottom: 15px;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
                 }
                 code {
                     background: #2d2d2d;
@@ -711,20 +453,6 @@ app.get('/', (req, res) => {
                     overflow-x: auto;
                     font-size: 13px;
                     line-height: 1.5;
-                }
-                .btn {
-                    display: inline-block;
-                    padding: 12px 30px;
-                    background: #667eea;
-                    color: #fff;
-                    border-radius: 8px;
-                    text-decoration: none;
-                    font-weight: bold;
-                    transition: background 0.3s;
-                    margin-top: 10px;
-                }
-                .btn:hover {
-                    background: #764ba2;
                 }
                 .feature-list {
                     list-style: none;
@@ -751,43 +479,36 @@ app.get('/', (req, res) => {
                     color: #999;
                     font-size: 13px;
                 }
-                .badge {
-                    background: #28a745;
-                    color: #fff;
-                    padding: 2px 10px;
-                    border-radius: 12px;
-                    font-size: 12px;
-                    display: inline-block;
-                }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>🚀 وكيل Thanawica</h1>
+                <h1>🚀 وكيل البث المحسّن</h1>
                 <div class="status">
                     <span style="font-size: 20px;">✅</span>
-                    <span>الخادم يعمل مع دعم فك التشفير</span>
-                    <span class="badge">AES-128-CBC</span>
+                    <span>الخادم يعمل بكفاءة عالية</span>
                 </div>
 
                 <div class="section">
-                    <h2>🎬 مشغل الفيديو</h2>
-                    <p style="color: #666; margin-bottom: 10px;">شاهد الفيديوهات مباشرة مع فك التشفير التلقائي</p>
-                    <a href="/player" class="btn">🚀 افتح المشغل</a>
+                    <h2>✨ التحسينات الجديدة</h2>
+                    <ul class="feature-list">
+                        <li>⚡ Streaming مباشر (Pipe) بدل تحميل السيجمنت كامل</li>
+                        <li>🔌 Keep-Alive Agent لتقليل زمن الاتصال بالمصدر</li>
+                        <li>🎯 دعم Range Requests للـ Seeking</li>
+                        <li>📦 تقليل الـ Redirects</li>
+                        <li>🔧 دعم أفضل لـ 360-sport و kora-yalla</li>
+                    </ul>
                 </div>
 
                 <div class="section">
-                    <h2>🔑 مفاتيح التشفير</h2>
-                    <code>المفتاح المستخرج تلقائياً من x-km</code>
-                    <code>IV يستخرج من m3u8 ويُمرر مع كل قطعة</code>
+                    <h2>📖 كيفية الاستخدام</h2>
+                    <code>GET /api/stream?url=https://example.com/playlist.m3u8</code>
                 </div>
 
                 <div class="section">
-                    <h2>📡 نقاط النهاية</h2>
-                    <code>GET /api/stream?url=&lt;URL&gt;</code>
-                    <p style="margin-top: 5px; color: #888; font-size: 13px;">يدعم M3U8 والقطع (.dat) مع فك التشفير لـ Thanawica</p>
-                    <code>GET /player</code>
-                    <p style="margin-top: 5px; color: #888; font-size: 13px;">مشغل فيديو متكامل مع دعم فك التشفير</p>
+                    <h2>⚙️ خيارات متقدمة</h2>
+                    <code>GET /api/stream?url=...&origin=https://...&referer=https://...</code>
+                    <p style="margin-top: 10px; color: #666;">تخصيص Origin و Referer يدوياً</p>
                 </div>
 
                 <div class="footer">
@@ -802,6 +523,7 @@ app.get('/', (req, res) => {
 // ============================================
 // 🚀 بدء السيرفر
 // ============================================
+
 const port = process.env.PORT || 3000;
 const hostname = process.env.HOSTNAME || 'localhost';
 
@@ -809,19 +531,17 @@ app.listen(port, () => {
     console.log(`
 ╔════════════════════════════════════════════════════════════════╗
 ║                                                                ║
-║        🚀 وكيل Thanawica مع فك التشفير التلقائي 🚀          ║
+║        🚀 وكيل البث المحسّن بدأ يعمل بنجاح! 🚀              ║
 ║                                                                ║
 ║  📡 الخادم:  http://${hostname}:${port}
 ║  🌐 الوكيل:  http://${hostname}:${port}/api/stream
-║  🎬 المشغل:  http://${hostname}:${port}/player
 ║  📊 اللوحة:  http://${hostname}:${port}/
 ║                                                                ║
-║  ✨ الميزات:                                                  ║
-║     • استخراج المفتاح تلقائياً من x-km                       ║
-║     • فك تشفير AES-128-CBC لكل قطعة مع IV الخاص بها          ║
-║     • تمرير الهيدرات الصحيحة (Referer, Cookies)              ║
-║     • مشغل فيديو متكامل                                       ║
-║     • دعم المواقع الأخرى (باستخدام domainMap)                ║
+║  ✨ التحسينات:                                               ║
+║     • Streaming مباشر بدل buffer كامل                       ║
+║     • Keep-Alive Agent للاتصال بالمصدر                     ║
+║     • دعم Range requests                                   ║
+║     • دعم 360-sport و kora-yalla                          ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
     `);
@@ -830,6 +550,7 @@ app.listen(port, () => {
 // ============================================
 // 🛑 التعامل مع الأخطاء
 // ============================================
+
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection:', reason);
 });
@@ -837,3 +558,4 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error);
 });
+
