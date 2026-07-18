@@ -66,7 +66,16 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
             },
             'vertyuz': {
                 origin: 'https://tv.vertyuz.xyz',
-                referer: 'https://tv.vertyuz.xyz/ch2.php'
+                // الـ Referer لازم يطابق رقم القناة الفعلي (ch1, ch2, ...) مش ثابت
+                // على ch2 دايمًا، وإلا السيرفر بيرفض الطلب
+                referer: (h, urlObj) => {
+                    const match = urlObj.pathname.match(/ch(\d+)/i);
+                    const channel = match ? match[1] : '1';
+                    return `https://tv.vertyuz.xyz/ch${channel}.php`;
+                },
+                userAgent: 'Mozilla/5.0 (Linux; Android 15; CPH2591 Build/AP3A.240617.008) AppleWebKit/537.36 (KHTML, like Gecko) Abck/4.0 Chrome/150.0.7871.46 Mobile Safari/537.36',
+                secChUa: '"Not;A=Brand";v="8", "Chromium";v="150", "Android WebView";v="150"',
+                xRequestedWith: 'com.mycompany.app.soulbrowser'
             },
             'foozlive': {
                 origin: 'https://912acsss8af382.shootny.com',
@@ -95,10 +104,10 @@ function getHeaders(url, refererOverride = null, originOverride = null) {
         for (const [key, config] of Object.entries(domainMap)) {
             if (hostname.includes(key)) {
                 foundOrigin = typeof config.origin === 'function' 
-                    ? config.origin(hostname) 
+                    ? config.origin(hostname, urlObj) 
                     : config.origin;
                 foundReferer = typeof config.referer === 'function' 
-                    ? config.referer(hostname) 
+                    ? config.referer(hostname, urlObj) 
                     : config.referer;
                 foundUserAgent = config.userAgent || null;
                 foundSecChUa = config.secChUa || null;
